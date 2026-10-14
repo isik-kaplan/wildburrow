@@ -1,0 +1,70 @@
+import asyncio
+import json
+from typing import Any
+
+from websockets.asyncio.connection import Connection
+from websockets.exceptions import ConnectionClosed
+
+CONNECT_PATH = "/_wildburrow/connect"
+DATA_PATH = "/_wildburrow/data/"
+SIGNATURE_NAMESPACE = "wildburrow"
+EOF_MARKER = "eof"
+
+
+def challenge_message(domain: str, nonce: str) -> bytes:
+    return f"wildburrow-login:{domain}:{nonce}".encode()
+
+
+def encode(kind: str, **fields: Any) -> str:
+    return json.dumps({"type": kind, **fields})
+
+
+def decode(message: str | bytes) -> dict[str, Any]:
+    data = json.loads(message)
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
+        raise ValueError("not a protocol message")
+    return data
+
+
+class WebSocketStream:
+    def __init__(self, ws: Connection) -> None:
+        self._ws = ws
+        self._buffer = b""
+        self._eof = False
+        self._outgoing: list[bytes | str] = []
+        self._closing: asyncio.Task[None] | None = None
+
+    async def read(self, n: int = -1) -> bytes:
+        while not self._buffer and not self._eof:
+            try:
+                message = await self._ws.recv()
+            except ConnectionClosed:
+                self._eof = True
+                break
+            if message == EOF_MARKER:
+                self._eof = True
+            elif isinstance(message, bytes):
+                self._buffer = message
+        size = len(self._buffer) if n < 0 else n
+        chunk, self._buffer = self._buffer[:size], self._buffer[size:]
+        return chunk
+
+    def write(self, data: bytes) -> None:
+        self._outgoing.append(data)
+
+    async def drain(self) -> None:
+        while self._outgoing:
+            try:
+                await self._ws.send(self._outgoing.pop(0))
+            except ConnectionClosed as exc:
+                raise BrokenPipeError(str(exc)) from exc
+
+    def can_write_eof(self) -> bool:
+        return True
+
+    def write_eof(self) -> None:
+        self._outgoing.append(EOF_MARKER)
+
+    def close(self) -> None:
+        if self._closing is None:
+            self._closing = asyncio.ensure_future(self._ws.close())

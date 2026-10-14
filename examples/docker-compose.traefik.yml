@@ -1,0 +1,35 @@
+# wildburrow behind an existing Traefik v3 that owns ports 80 and 443.
+# TLS for *.tunnel.example.com passes through untouched; Traefik prepends a PROXY header so wildburrow sees real
+# client addresses. SSH is published directly.
+services:
+  wildburrow:
+    build: ..
+    restart: unless-stopped
+    ports:
+      - "2222:2222"
+    volumes:
+      - wildburrow-data:/data
+    environment:
+      WILDBURROW_DOMAIN: tunnel.example.com
+      WILDBURROW_TRANSPORTS: ssh,websocket
+      WILDBURROW_AUTH: key
+      WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS: ${AUTHORIZED_KEYS}
+      WILDBURROW_DNS: cloudflare
+      WILDBURROW_DNS_CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      WILDBURROW_ACME_EMAIL: you@example.com
+      WILDBURROW_HTTPS_PROXY_PROTOCOL: "true"
+    labels:
+      - traefik.enable=true
+      - traefik.tcp.routers.wildburrow.rule=HostSNI(`tunnel.example.com`) || HostSNIRegexp(`^.+\.tunnel\.example\.com$`)
+      - traefik.tcp.routers.wildburrow.entrypoints=https
+      - traefik.tcp.routers.wildburrow.tls.passthrough=true
+      - traefik.tcp.routers.wildburrow.service=wildburrow
+      - traefik.tcp.services.wildburrow.loadbalancer.server.port=443
+      - traefik.tcp.services.wildburrow.loadbalancer.serverstransport=wildburrow-proxy@docker
+      - traefik.tcp.serverstransports.wildburrow-proxy.proxyprotocol.version=2
+      - traefik.http.routers.wildburrow-http.rule=Host(`tunnel.example.com`) || HostRegexp(`^.+\.tunnel\.example\.com$`)
+      - traefik.http.routers.wildburrow-http.entrypoints=http
+      - traefik.http.services.wildburrow-http.loadbalancer.server.port=80
+
+volumes:
+  wildburrow-data:

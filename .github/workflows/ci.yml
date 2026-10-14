@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+      - run: uv export --frozen --all-extras --no-dev --no-emit-project --format requirements-txt > requirements.txt
+      - run: uvx pip-audit==2.10.1 --strict --disable-pip -r requirements.txt
+
+  test-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.15"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+          python-version: ${{ matrix.python }}
+      - run: docker pull ghcr.io/letsencrypt/pebble:2.10.1
+      - run: docker pull ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+      - run: uv sync --locked --all-extras
+      - run: uv run pytest -n auto
+
+  test-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.15"]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --all-extras
+      - run: uv run pytest -n auto -m "not acme" --no-cov
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: docker build -t wildburrow:ci .
+      - run: docker run --rm wildburrow:ci --version
+      - run: test "$(docker run --rm --entrypoint id wildburrow:ci -u)" != "0"

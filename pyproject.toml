@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wildburrow"
+version = "0.1.0"
+description = "Self-hosted HTTP tunnels with on-demand wildcard certificates at any depth"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Işık Kaplan" }]
+requires-python = ">=3.14"
+dependencies = [
+    "websockets==17.2",
+]
+
+[project.urls]
+Repository = "https://github.com/isik-kaplan/wildburrow"
+
+[project.optional-dependencies]
+server = [
+    "acme==5.8.0",
+    "argon2-cffi==25.1.0",
+    "asyncssh==2.24.1",
+    "cryptography==50.0.2",
+    "httpx==0.28.1",
+    "josepy==2.2.0",
+]
+
+[project.scripts]
+wildburrow = "wildburrow.__main__:main"
+
+[project.entry-points."wildburrow.transports"]
+ssh = "wildburrow.transports.ssh:SSHTransport"
+websocket = "wildburrow.transports.websocket:WebSocketTransport"
+
+[project.entry-points."wildburrow.auth"]
+key = "wildburrow.auth.keys:KeyAuth"
+password = "wildburrow.auth.password:PasswordAuth"
+token = "wildburrow.auth.token:TokenAuth"
+
+[project.entry-points."wildburrow.dns"]
+cloudflare = "wildburrow.dns.cloudflare:CloudflareDNS"
+
+[dependency-groups]
+dev = [
+    "hypothesis==6.169.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "pytest-timeout==2.4.0",
+    "pytest-xdist==3.8.0",
+    "ruff==0.17.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wildburrow"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF", "SIM", "PT"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "ASYNC110"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--strict-markers --cov=wildburrow --cov-branch --cov-report=term-missing"
+markers = [
+    "e2e: drives real clients against a running server",
+    "acme: needs Docker for a local Pebble ACME server",
+]
+filterwarnings = ["error"]
+timeout = 120
+
+[tool.coverage.run]
+source = ["wildburrow"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
