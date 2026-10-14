@@ -5,7 +5,7 @@ import socket
 import asyncssh
 import pytest
 
-from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Credentials, StartServer, get, http
+from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Credentials, Running, StartServer, get, http
 
 pytestmark = pytest.mark.e2e
 
@@ -200,18 +200,22 @@ async def test_dynamic_remote_port(start_server: StartServer, connect: Connect, 
     assert (await get(running.http_port, f"app.{DOMAIN}"))[0] == 200
 
 
-async def test_bind_after_session_is_open(
-    start_server: StartServer, credentials: Credentials, backend: Backend
-) -> None:
-    running = await start_server()
-    async with asyncssh.connect(
+def ssh_session(running: Running, credentials: Credentials) -> asyncssh.SSHClientConnection:
+    return asyncssh.connect(
         "127.0.0.1",
         running.ssh_port,
         username="tester",
         client_keys=[str(credentials.key)],
         known_hosts=None,
         agent_path=None,
-    ) as conn:
+    )
+
+
+async def test_bind_after_session_is_open(
+    start_server: StartServer, credentials: Credentials, backend: Backend
+) -> None:
+    running = await start_server()
+    async with ssh_session(running, credentials) as conn:
         process = await conn.create_process()
         await conn.forward_remote_port("late", 80, "127.0.0.1", backend.port)
         async with asyncio.timeout(TIMEOUT):
@@ -220,3 +224,18 @@ async def test_bind_after_session_is_open(
         process.stdin.write_eof()
         await asyncio.sleep(0.2)
         assert (await get(running.http_port, f"late.{DOMAIN}"))[0] == 200
+
+
+@pytest.mark.parametrize("session_first", [True, False])
+async def test_rejection_ends_the_session(
+    start_server: StartServer, credentials: Credentials, session_first: bool
+) -> None:
+    running = await start_server()
+    async with ssh_session(running, credentials) as conn:
+        process = await conn.create_process() if session_first else None
+        with pytest.raises(asyncssh.ChannelListenError):
+            await conn.forward_remote_port("a..b", 80, "127.0.0.1", 9)
+        process = process or await conn.create_process()
+        async with asyncio.timeout(TIMEOUT):
+            assert (await process.stdout.readline()).startswith("rejected: ")
+            assert (await process.wait()).exit_status == 1
