@@ -31,14 +31,29 @@ def test_false_values(raw: str) -> None:
 @pytest.mark.parametrize(
     ("env", "message"),
     [
-        ({}, "missing required setting\\(s\\): X_REQUIRED"),
-        ({"X_REQUIRED": "r", "X_FLAG": "maybe"}, "X_FLAG: expected one of"),
+        ({}, "missing required setting(s): X_REQUIRED"),
+        (
+            {"X_REQUIRED": "r", "X_FLAG": "maybe"},
+            f"X_FLAG: expected one of {sorted(config.TRUE | config.FALSE)}, got 'maybe'",
+        ),
         ({"X_REQUIRED": "r", "X_COUNT": "1.5"}, "X_COUNT: expected an integer, got '1.5'"),
     ],
 )
 def test_errors(env: dict[str, str], message: str) -> None:
-    with pytest.raises(config.ConfigError, match=message):
+    with pytest.raises(config.ConfigError) as error:
         config.load(Example, env, "X_")
+    assert str(error.value) == message
+
+
+@dataclass(frozen=True)
+class TwoRequired:
+    first: str
+    second: str
+
+
+def test_every_missing_setting_is_named() -> None:
+    with pytest.raises(config.ConfigError, match=r"^missing required setting\(s\): X_FIRST, X_SECOND$"):
+        config.load(TwoRequired, {}, "X_")
 
 
 @given(st.lists(st.from_regex(r"[a-z0-9-]{1,10}", fullmatch=True), max_size=5))
