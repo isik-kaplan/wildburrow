@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import json
+import logging
 import os
 import ssl
 import sys
@@ -10,11 +11,23 @@ import pytest
 from websockets.asyncio.client import connect
 
 from tests import acme_env
-from tests.conftest import DOMAIN, PASSWORD, TIMEOUT, Backend, Connect, Credentials, Running, StartServer, get, http
+from tests.conftest import (
+    DOMAIN,
+    PASSWORD,
+    TIMEOUT,
+    Backend,
+    Connect,
+    Credentials,
+    Running,
+    StartServer,
+    free_port,
+    get,
+    http,
+)
 from wildburrow import protocol
 from wildburrow.auth.token import digest, new_token
 from wildburrow.client.config import ClientConfig
-from wildburrow.client.websocket import Client
+from wildburrow.client.websocket import Client, sign
 
 pytestmark = pytest.mark.e2e
 
@@ -185,11 +198,12 @@ async def raw_control(running: Running) -> object:
 @pytest.mark.parametrize(
     ("messages", "reason"),
     [
-        (["not json"], "Expecting value"),
+        (["not json"], "Expecting value: line 1 column 1 (char 0)"),
         ([json.dumps({"no": "type"})], "not a protocol message"),
         ([protocol.encode("bind", name="x")], "expected hello"),
         ([protocol.encode("hello", method="magic")], "unknown method 'magic'"),
-        ([protocol.encode("hello", method="password")], "password"),
+        ([protocol.encode("hello", method="password", username="u")], "'password'"),
+        ([protocol.encode("hello", method="password", password="p")], "'username'"),
         ([protocol.encode("hello", method="key", public_key="ssh-ed25519 nope")], "unreadable public key"),
         (
             [protocol.encode("hello", method="key", public_key="KEY"), protocol.encode("hello")],
@@ -209,7 +223,7 @@ async def test_malformed_logins_are_closed(
         for message in messages:
             await ws.send(message.replace("KEY", credentials.public_key.strip()))
         await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
-        assert reason in ws.close_reason
+        assert ws.close_reason == reason
 
 
 async def test_login_must_finish_in_time(start_server: StartServer, ws_env) -> None:
@@ -240,12 +254,13 @@ async def test_streams_need_a_pending_id(start_server: StartServer, ws_env) -> N
     running = await start_server(**ws_env)
     async with local(running)(f"ws://{DOMAIN}{protocol.DATA_PATH}guess", proxy=None) as ws:
         await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
-        assert ws.close_code == 4404
+        assert (ws.close_code, ws.close_reason) == (protocol.CLOSE_UNKNOWN_STREAM, "unknown stream")
 
 
 async def test_client_that_never_opens_the_stream(
-    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env
+    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     running = await start_server(**ws_env, WILDBURROW_WEBSOCKET_OPEN_TIMEOUT="1")
     async with await raw_control(running) as ws:
         await ws.send(protocol.encode("hello", method="token", token=TOKEN))
@@ -253,11 +268,55 @@ async def test_client_that_never_opens_the_stream(
         await ws.send(protocol.encode("bind", name="lazy"))
         await ws.recv()
         assert (await get(running.http_port, f"lazy.{DOMAIN}"))[0] == 502
+        opened = protocol.decode(await ws.recv())
+    assert opened["type"] == "open"
+    assert len(opened["id"]) == 32
+    assert running.server.transports[1].pending == {}
+    message = f"could not reach the client for lazy.{DOMAIN}: the client did not open a stream in time"
+    assert ("wildburrow.edge.http", logging.INFO, message) in caplog.record_tuples
+
+
+async def test_messages_over_the_limit_are_refused(start_server: StartServer, ws_env) -> None:
+    running = await start_server(**ws_env, WILDBURROW_WEBSOCKET_MAX_MESSAGE_BYTES="1024")
+    async with await raw_control(running) as ws:
+        await ws.send("x" * 2000)
+        await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
+        assert ws.close_code == 1009
+
+
+async def direct_login(port: int, host: str) -> tuple[object, object]:
+    async with connect(f"ws://{host}:{port}{protocol.CONNECT_PATH}", proxy=None) as ws:
+        await ws.send(protocol.encode("hello", method="token", token="wb_wrong"))
+        await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
+        return ws.close_code, ws.close_reason
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+async def test_the_transport_takes_direct_connections(
+    start_server: StartServer, ws_env, host: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    port = free_port()
+    running = await start_server(**ws_env, WILDBURROW_WEBSOCKET_HOST=host, WILDBURROW_WEBSOCKET_PORT=str(port))
+    assert [sock.getsockname()[:2] for sock in running.server.transports[1]._server.sockets] == [(host, port)]
+    assert await direct_login(port, f"[{host}]" if ":" in host else host) == (
+        protocol.CLOSE_AUTH_FAILED,
+        "authentication failed",
+    )
+    assert ("wildburrow.transports.websocket", logging.INFO, f"websocket login failed from {host}") in (
+        caplog.record_tuples
+    )
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token=TOKEN))
+        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": "ci"}
 
 
 async def test_other_root_paths_are_not_found(start_server: StartServer, ws_env) -> None:
     running = await start_server(**ws_env)
-    assert (await get(running.http_port, DOMAIN, "/anything"))[0] == 404
+    response = await http(running.http_port, f"GET /anything HTTP/1.1\r\nHost: {DOMAIN}\r\n\r\n".encode())
+    assert response.startswith(b"HTTP/1.1 404 ")
+    assert response.endswith(b"\r\n\r\nnot found\n")
+    assert b"\r\nserver:" not in response.lower()
     assert (await get(running.http_port, DOMAIN.upper(), "/"))[0] == 404
 
 
@@ -295,6 +354,7 @@ async def test_websocket_over_tls(
         while not running.server.ctx.certs.ready(DOMAIN):
             await asyncio.sleep(0.1)
     task, out = start_client(running, config, backend.port, ["*.foo"], connector=connector)
+    assert await out.wait_for("issuing") == f"issuing a certificate for *.foo.{DOMAIN}"
     assert await out.wait_for("ready:") == f"ready: https://*.foo.{DOMAIN}"
     status, _ = await get(running.http_port, DOMAIN, protocol.CONNECT_PATH)
     assert status == 308
@@ -391,3 +451,110 @@ async def test_password_blocking_follows_the_proxied_address(start_server: Start
     password_auth = running.server.ctx.authenticator._providers[1]
     assert password_auth.blocked("203.0.113.9")
     assert not password_auth.blocked("127.0.0.1")
+
+
+async def key_challenge(running: Running, credentials: Credentials) -> tuple[object, str]:
+    ws = await raw_control(running)
+    await ws.send(protocol.encode("hello", method="key", username="tester", public_key=credentials.public_key.strip()))
+    challenge = protocol.decode(await ws.recv())
+    assert challenge["namespace"] == protocol.SIGNATURE_NAMESPACE
+    return ws, str(challenge["message"])
+
+
+async def test_key_logins_answer_a_fresh_challenge_for_this_server(
+    start_server: StartServer, credentials: Credentials, ws_env
+) -> None:
+    running = await start_server(**ws_env)
+    first, message = await key_challenge(running, credentials)
+    second, other = await key_challenge(running, credentials)
+    prefix, _, nonce = message.rpartition(":")
+    assert prefix == f"wildburrow-login:{DOMAIN}"
+    assert len(nonce) == 43
+    assert other != message
+    signature = sign(credentials.key, protocol.SIGNATURE_NAMESPACE, message.encode())
+    await second.send(protocol.encode("signature", signature=signature))
+    await asyncio.wait_for(second.wait_closed(), TIMEOUT)
+    assert (second.close_code, second.close_reason) == (protocol.CLOSE_AUTH_FAILED, "authentication failed")
+    await first.send(protocol.encode("signature", signature=signature))
+    assert protocol.decode(await first.recv()) == {"type": "welcome", "identity": "laptop"}
+    await first.close()
+
+
+@pytest.mark.parametrize(
+    ("hello", "identity"),
+    [
+        ({"method": "password", "username": "alice", "password": PASSWORD}, "alice"),
+        ({"method": "token", "token": TOKEN}, "ci"),
+    ],
+)
+async def test_logins_are_welcomed_by_name(start_server: StartServer, ws_env, hello: dict, identity: str) -> None:
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", **hello))
+        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": identity}
+
+
+async def test_binds_are_answered_in_full(start_server: StartServer, ws_env, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token=TOKEN))
+        await ws.recv()
+        await ws.send(protocol.encode("bind", name="*.*.foo"))
+        assert protocol.decode(await ws.recv()) == {
+            "type": "rejected",
+            "name": "*.*.foo",
+            "reason": "'*.*.foo': '*' is only allowed as the leftmost label",
+        }
+        await ws.send(protocol.encode("bind", name="App"))
+        assert protocol.decode(await ws.recv()) == {"type": "bound", "name": "app", "url": f"http://app.{DOMAIN}"}
+    assert ("wildburrow.transports.websocket", logging.INFO, "ci bound app over websocket") in caplog.record_tuples
+
+
+async def test_failed_logins_are_logged(start_server: StartServer, ws_env, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token="wb_wrong"))
+        await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
+    assert ("wildburrow.transports.websocket", logging.INFO, "websocket login failed from 127.0.0.1") in (
+        caplog.record_tuples
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    [
+        (json.dumps({"type": "bind"}), "'name'"),
+        ("x" * 200, "Expecting value: line 1 column 1 (char 0)"),
+        (json.dumps({"type": "open-failed"}), "'id'"),
+    ],
+)
+async def test_protocol_errors_after_login_name_the_problem(
+    start_server: StartServer, ws_env, message: str, reason: str
+) -> None:
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token=TOKEN))
+        await ws.recv()
+        await ws.send(message)
+        await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
+        assert (ws.close_code, ws.close_reason) == (protocol.CLOSE_PROTOCOL_ERROR, reason)
+
+
+async def test_an_unreachable_local_port_is_reported(
+    start_server: StartServer, credentials: Credentials, ws_env, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token=TOKEN))
+        await ws.recv()
+        await ws.send(protocol.encode("bind", name="gone"))
+        await ws.recv()
+        request = asyncio.create_task(get(running.http_port, f"gone.{DOMAIN}"))
+        opened = protocol.decode(await ws.recv())
+        await ws.send(protocol.encode("open-failed", id=opened["id"]))
+        assert (await request)[0] == 502
+    message = f"could not reach the client for gone.{DOMAIN}: the client could not reach its local port"
+    assert ("wildburrow.edge.http", logging.INFO, message) in caplog.record_tuples

@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 HEAD_END = b"\r\n\r\n"
 TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 VERSION = re.compile(r"HTTP/1\.[01]")
+WHITESPACE = " \t"
+FIXED_HEADERS = ("Content-Type: text/plain; charset=utf-8", "Connection: close")
 
 
 class BadRequest(Exception):
@@ -36,10 +38,9 @@ class Request:
 
 
 def parse_request(head: bytes) -> Request:
-    try:
-        text = head.decode("ascii")
-    except UnicodeDecodeError:
-        raise BadRequest("non-ascii request head") from None
+    if not head.isascii():
+        raise BadRequest("non-ascii request head")
+    text = head.decode()
     request_line, *header_lines = text.removesuffix("\r\n\r\n").split("\r\n")
     parts = request_line.split(" ")
     if len(parts) != 3 or not TOKEN.fullmatch(parts[0]) or not VERSION.fullmatch(parts[2]):
@@ -52,7 +53,7 @@ def parse_request(head: bytes) -> Request:
         if not sep or not TOKEN.fullmatch(name):
             raise BadRequest("malformed header line")
         if name.lower() == "host":
-            hosts.append(value.strip(" \t"))
+            hosts.append(value.strip(WHITESPACE))
     if len(hosts) != 1:
         raise BadRequest("exactly one Host header is required")
     host, _, port = hosts[0].partition(":")
@@ -65,7 +66,7 @@ def response(status: HTTPStatus, headers: dict[str, str] | None = None) -> bytes
     body = f"{status.value} {status.phrase}\n".encode()
     lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
     lines += [f"{key}: {value}" for key, value in (headers or {}).items()]
-    lines += ["Content-Type: text/plain; charset=utf-8", f"Content-Length: {len(body)}", "Connection: close"]
+    lines += [f"Content-Length: {len(body)}", *FIXED_HEADERS]
     return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
 

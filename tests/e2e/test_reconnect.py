@@ -1,12 +1,11 @@
 import asyncio
 import contextlib
 import functools
-import socket
 
 import pytest
 from websockets.asyncio.client import connect as ws_connect
 
-from tests.conftest import DOMAIN, TIMEOUT, Backend, Credentials, Running, StartServer, get, ssh_args
+from tests.conftest import DOMAIN, TIMEOUT, Backend, Credentials, Running, StartServer, free_port, get, ssh_args
 from tests.e2e.test_websocket import TOKEN, client_config, start_client, stop
 from tests.e2e.test_websocket import Lines as Output
 from wildburrow.auth.token import digest
@@ -35,12 +34,6 @@ async def restart(running: Running, start_server: StartServer) -> Running:
     same_ports = ports(running)
     await running.server.__aexit__(None, None, None)
     return await start_server(**ENV, **same_ports)
-
-
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
 
 
 @contextlib.asynccontextmanager

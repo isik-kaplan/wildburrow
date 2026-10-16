@@ -1,14 +1,24 @@
 import asyncio
+import logging
 import os
 import signal
+import stat
 from pathlib import Path
 
+import asyncssh
 import pytest
+from websockets.exceptions import ConnectionClosedOK
+from websockets.frames import Close
 
+from tests.conftest import free_port
 from wildburrow import config
+from wildburrow.auth.base import Authenticator
+from wildburrow.core.context import ServerContext
+from wildburrow.core.errors import BindRejected, TunnelUnavailable
+from wildburrow.core.types import Peer
 from wildburrow.server import Server, serve
 from wildburrow.transports.ssh import SSHSettings, SSHTransport, load_host_key
-from wildburrow.transports.websocket import WebSocketSettings, WebSocketTransport
+from wildburrow.transports.websocket import WebSocketSettings, WebSocketTransport, _Outbox, _Root, close_reason
 
 
 def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
@@ -77,3 +87,71 @@ def test_host_key_is_created_once(tmp_path: Path) -> None:
     created = load_host_key(path)
     assert path.stat().st_mode & 0o777 == 0o600
     assert load_host_key(path).public_data == created.public_data
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [(ValueError("x" * 200), "x" * 100), (KeyError("name"), "'name'"), (TimeoutError(), "TimeoutError")],
+)
+def test_close_reasons_fit_a_control_frame(exc: Exception, reason: str) -> None:
+    assert close_reason(exc) == reason
+
+
+async def test_the_ssh_server_offers_only_tunnels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def create_server(factory: object, host: str, port: int, **options: object) -> object:
+        seen.update(host=host, port=port, **options)
+        return object()
+
+    monkeypatch.setattr(asyncssh, "create_server", create_server)
+    settings = SSHSettings(host="127.0.0.5", port=2200, login_timeout=7, keepalive_interval=9)
+    await SSHTransport(settings).start(ServerContext("example.com", 5, tmp_path, Authenticator([])))
+    options = ("host", "port", "login_timeout", "keepalive_interval", "allow_scp", "agent_forwarding", "x11_forwarding")
+    assert {key: seen[key] for key in options} == {
+        "host": "127.0.0.5",
+        "port": 2200,
+        "login_timeout": 7,
+        "keepalive_interval": 9,
+        "allow_scp": False,
+        "agent_forwarding": False,
+        "x11_forwarding": False,
+    }
+
+
+async def test_the_server_listens_where_it_is_told(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    http_port, ssh_port = free_port(), free_port()
+    values = env(tmp_path, HTTP_HOST="127.0.0.1", HTTP_PORT=str(http_port), SSH_PORT=str(ssh_port))
+    values[f"{config.PREFIX}DATA_DIR"] = str(tmp_path / "nested" / "data")
+    async with Server(config.load(config.ServerSettings, values, config.PREFIX), values) as server:
+        assert [sock.getsockname()[:2] for sock in server.edges[0]._server.sockets] == [("127.0.0.1", http_port)]
+        assert server.transports[0].port == ssh_port
+    assert stat.S_IMODE((tmp_path / "nested" / "data").stat().st_mode) == 0o700
+    assert ("wildburrow.server", logging.INFO, "serving *.tunnel.example.com") in caplog.record_tuples
+
+
+async def test_an_unreachable_root_names_the_cause() -> None:
+    root = _Root(("127.0.0.1", free_port()), {})
+    with pytest.raises(TunnelUnavailable) as error:
+        await root.open_stream(Peer("192.0.2.1", 1))
+    assert str(error.value) == str(error.value.__cause__)
+    assert isinstance(error.value.__cause__, OSError)
+
+
+async def test_the_outbox_stops_quietly_on_a_closed_connection() -> None:
+    class Closed:
+        async def send(self, message: str) -> None:
+            raise ConnectionClosedOK(Close(1000, ""), None)
+
+    outbox = _Outbox(Closed())
+    outbox.put("status", message="x")
+    await outbox.flush_and_stop()
+
+
+async def test_names_are_measured_with_the_domain(tmp_path: Path) -> None:
+    domain = "d" * 60 + ".example.com"
+    ctx = ServerContext(domain, 5, tmp_path, Authenticator([]))
+    name = ".".join(["b" * 60] * 3)
+    with pytest.raises(BindRejected, match=rf"^'{name}': longer than 253 characters with the domain$"):
+        await ctx.bind(name, object(), print)

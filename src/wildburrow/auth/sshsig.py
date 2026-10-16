@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import struct
 
 from asyncssh.public_key import decode_ssh_public_key
 
@@ -16,7 +15,7 @@ class InvalidSignature(Exception):
 
 
 def _string(value: bytes) -> bytes:
-    return struct.pack(">I", len(value)) + value
+    return len(value).to_bytes(4) + value
 
 
 class _Reader:
@@ -32,7 +31,7 @@ class _Reader:
         return chunk
 
     def uint32(self) -> int:
-        return struct.unpack(">I", self.take(4))[0]
+        return int.from_bytes(self.take(4))
 
     def string(self) -> bytes:
         return self.take(self.uint32())

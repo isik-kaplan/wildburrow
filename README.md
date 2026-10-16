@@ -172,3 +172,11 @@ uv run pytest -n auto                 # needs Docker for the Pebble ACME tests
 uv run pytest -n auto -m "not acme"   # without Docker
 uv run ruff check . && uv run ruff format --check .
 ```
+
+Coverage stays at 100%, and every mutant has to be killed. The mutation run re-tests only what changed since the last
+run in `mutants/`, both source and tests; CI keeps that directory cached between runs.
+
+```sh
+uv run python -m scripts.mutation run          # re-test what changed
+uv run python -m scripts.mutation run --full   # re-test everything
+```

@@ -1,10 +1,11 @@
 import asyncio
+from http import HTTPStatus
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from wildburrow.edge.http import HEAD_END, BadRequest, Edge, parse_request
+from wildburrow.edge.http import HEAD_END, BadRequest, Edge, parse_request, response
 from wildburrow.streams import relay
 
 
@@ -18,6 +19,8 @@ def head(*lines: str) -> bytes:
         (head("GET / HTTP/1.1", "Host: App.Example.com"), "app.example.com"),
         (head("POST /x?y HTTP/1.0", "Accept: */*", "host:\tapp.example.com:8080 ", "X-A: b"), "app.example.com"),
         (head("OPTIONS /* HTTP/1.1", "Host: a"), "a"),
+        (head("GET / HTTP/1.1", "Host: Xa"), "xa"),
+        (head("GET / HTTP/1.1", "Host: a\x0c"), "a\x0c"),
     ],
 )
 def test_request_host(raw: bytes, host: str) -> None:
@@ -27,24 +30,32 @@ def test_request_host(raw: bytes, host: str) -> None:
 @pytest.mark.parametrize(
     ("raw", "reason"),
     [
-        ("GET / HTTP/1.1\r\nHost: \xe9\r\n\r\n".encode("latin-1"), "non-ascii"),
+        ("GET / HTTP/1.1\r\nHost: \xe9\r\n\r\n".encode("latin-1"), "non-ascii request head"),
         (head("GET / HTTP/2.0", "Host: a"), "malformed request line"),
         (head("GET /  HTTP/1.1", "Host: a"), "malformed request line"),
         (head("G(T / HTTP/1.1", "Host: a"), "malformed request line"),
-        (head("GET http://a/ HTTP/1.1", "Host: a"), "origin-form"),
-        (head("CONNECT a:443 HTTP/1.1", "Host: a"), "origin-form"),
-        (head("GET / HTTP/1.1", " Host: a"), "malformed header"),
-        (head("GET / HTTP/1.1", "Host : a"), "malformed header"),
-        (head("GET / HTTP/1.1", "Host: a", "\tfolded"), "malformed header"),
-        (head("GET / HTTP/1.1", "NoColon"), "malformed header"),
-        (head("GET / HTTP/1.1"), "exactly one Host"),
-        (head("GET / HTTP/1.1", "Host: a", "HOST: b"), "exactly one Host"),
+        (head("GET http://a/ HTTP/1.1", "Host: a"), "only origin-form request targets are accepted"),
+        (head("CONNECT a:443 HTTP/1.1", "Host: a"), "only origin-form request targets are accepted"),
+        (head("GET / HTTP/1.1", " Host: a"), "malformed header line"),
+        (head("GET / HTTP/1.1", "Host : a"), "malformed header line"),
+        (head("GET / HTTP/1.1", "Host: a", "\tfolded"), "malformed header line"),
+        (head("GET / HTTP/1.1", "NoColon"), "malformed header line"),
+        (head("GET / HTTP/1.1"), "exactly one Host header is required"),
+        (head("GET / HTTP/1.1", "Host: a", "HOST: b"), "exactly one Host header is required"),
         (head("GET / HTTP/1.1", "Host: a:x"), "malformed Host port"),
     ],
 )
 def test_bad_requests(raw: bytes, reason: str) -> None:
-    with pytest.raises(BadRequest, match=reason):
+    with pytest.raises(BadRequest) as error:
         parse_request(raw)
+    assert str(error.value) == reason
+
+
+def test_responses_are_complete_and_close_the_connection() -> None:
+    assert response(HTTPStatus.PERMANENT_REDIRECT, {"Location": "https://a/"}) == (
+        b"HTTP/1.1 308 Permanent Redirect\r\nLocation: https://a/\r\nContent-Length: 23\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n308 Permanent Redirect\n"
+    )
 
 
 @given(st.binary(max_size=300))

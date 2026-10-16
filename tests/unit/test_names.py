@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from wildburrow.core.names import LABEL, InvalidName, Name, host_labels, parse_name
+from wildburrow.core.names import LABEL, MAX_FQDN_LENGTH, InvalidName, Name, host_labels, parse_name
 
 DOMAIN = "tunnel.example.com"
 labels = st.from_regex(LABEL, fullmatch=True)
@@ -80,3 +80,11 @@ def test_host_labels(host: str, expected: tuple[str, ...] | None) -> None:
 @given(st.lists(labels, min_size=1, max_size=4))
 def test_host_labels_inverts_fqdn(parts: list[str]) -> None:
     assert host_labels(Name(tuple(parts)).fqdn(DOMAIN), DOMAIN) == tuple(parts)
+
+
+def test_a_name_may_fill_the_fqdn_exactly() -> None:
+    longest = ".".join(["a" * 63] * 3 + ["a" * 42])
+    assert len(f"{longest}.{DOMAIN}") == MAX_FQDN_LENGTH
+    assert str(parse_name(longest, DOMAIN, max_depth=5)) == longest
+    with pytest.raises(InvalidName, match=r"longer than 253 characters with the domain$"):
+        parse_name(longest + "a", DOMAIN, max_depth=5)

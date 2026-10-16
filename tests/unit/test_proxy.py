@@ -31,6 +31,9 @@ async def parse(data: bytes) -> Peer:
         (b"PROXY TCP6 2001:db8::1 2001:db8::2 51000 443\r\n", Peer("2001:db8::1", 51000)),
         (b"PROXY UNKNOWN\r\n", FALLBACK),
         (b"PROXY UNKNOWN ffff::1 ffff::2 1 2\r\n", FALLBACK),
+        (b"PROXY UNKNOWN " + b"x" * 91 + b"\r\n", FALLBACK),
+        (b"PROXY TCP4 203.0.113.9 10.0.0.1 0 65535\r\n", Peer("203.0.113.9", 0)),
+        (b"PROXY TCP4 203.0.113.9 10.0.0.1 65535 0\r\n", Peer("203.0.113.9", 65535)),
         (v2(proxy.V2_PROXY, proxy.V2_TCP4, proxy.V2_IPV4.pack(bytes([203, 0, 113, 9]), bytes(4), 51000, 443)),
          Peer("203.0.113.9", 51000)),
         (v2(proxy.V2_PROXY, proxy.V2_TCP6, V6_PAYLOAD + b"tlv"), Peer("2001:db8::1", 7)),
@@ -51,15 +54,25 @@ async def test_headers(data: bytes, peer: Peer) -> None:
         (b"PROXY TCP4 nope 10.0.0.1 1 2\r\n", "malformed PROXY v1 address"),
         (b"PROXY TCP4 1.2.3.4 10.0.0.1 99999 2\r\n", "malformed PROXY v1 address"),
         (b"PROXY TCP4 1.2.3.4 10.0.0.1 x 2\r\n", "malformed PROXY v1 address"),
-        (b"PROXY " + b"A" * 200 + b"\r\n", "too long"),
+        (b"PROXY TCP4 1.2.3.4 10.0.0.1 65536 2\r\n", "malformed PROXY v1 address"),
+        (b"PROXY TCP4 1.2.3.4 10.0.0.1 +1_0 2\r\n", "malformed PROXY v1 address"),
+        (b"PROXY TCP4 1.2.3.4 nope 1 2\r\n", "malformed PROXY v1 address"),
+        (b"PROXY TCP4 1.2.3.4 ::1 1 2\r\n", "malformed PROXY v1 address"),
+        (b"PROXY TCP4 1.2.3.4 10.0.0.1 1 65536\r\n", "malformed PROXY v1 address"),
+        (b"PROXY TCP4  1.2.3.4 10.0.0.1 1 2\r\n", "malformed PROXY v1 header"),
+        (b"PROXY TCP4\t1.2.3.4 10.0.0.1 1 2\r\n", "malformed PROXY v1 header"),
+        ("PROXY TCP4 1.2.3.4 10.0.0.1 \u0665\u0661 2\r\n".encode(), "malformed PROXY v1 header"),
+        (b"PROXY " + b"A" * 200 + b"\r\n", "PROXY v1 header too long"),
+        (b"PROXY UNKNOWN " + b"x" * 92 + b"\r\n", "PROXY v1 header too long"),
         (b"GET / HTTP/1.1\r\nHost: x\r\n\r\n", "missing PROXY protocol header"),
         (v2(0x22, proxy.V2_TCP4, bytes(12)), "unsupported PROXY v2 command"),
         (v2(proxy.V2_PROXY, proxy.V2_TCP4, bytes(4)), "truncated PROXY v2 address"),
     ],
 )
 async def test_bad_headers(data: bytes, reason: str) -> None:
-    with pytest.raises(proxy.ProxyHeaderError, match=reason):
+    with pytest.raises(proxy.ProxyHeaderError) as error:
         await parse(data)
+    assert str(error.value) == reason
 
 
 @given(st.binary(max_size=120))
@@ -70,6 +83,10 @@ async def test_random_input_never_crashes(data: bytes) -> None:
         return
     ipaddress.ip_address(peer.host)
     assert 0 <= peer.port <= 65535
+
+
+def test_networks_with_host_bits_are_accepted() -> None:
+    assert proxy.networks(["10.1.2.3/8"]) == [ipaddress.ip_network("10.0.0.0/8")]
 
 
 def test_trusted_networks() -> None:

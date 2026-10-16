@@ -39,15 +39,22 @@ async def test_key_auth_matches_listed_keys() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("", "no keys found"),
-        ("# only a comment", "no keys found"),
-        ("ssh-ed25519 not-base64", "cannot parse"),
-        ('command="x" ssh-ed25519 AAAA', "cannot parse"),
+        ("", "authorized_keys: no keys found"),
+        ("# only a comment", "authorized_keys: no keys found"),
+        (
+            "ssh-ed25519 not-base64-and-then-some-more-text",
+            "authorized_keys: cannot parse 'ssh-ed25519 not-base64-and-then-some-mor': Invalid public key",
+        ),
+        (
+            'command="x" ssh-ed25519 AAAA',
+            "authorized_keys: cannot parse 'command=\"x\" ssh-ed25519 AAAA': Invalid public key",
+        ),
     ],
 )
 def test_key_auth_config_errors(text: str, message: str) -> None:
-    with pytest.raises(ConfigError, match=message):
+    with pytest.raises(ConfigError) as error:
         KeyAuth(KeySettings(text))
+    assert str(error.value) == message
 
 
 class Clock:
@@ -61,14 +68,19 @@ class Clock:
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
-        (PasswordSettings("plain"), "not an argon2 hash"),
-        (PasswordSettings(HASH, max_failures=0), "at least 1"),
-        (PasswordSettings(HASH, block_seconds=0), "at least 1"),
+        (PasswordSettings("plain"), "hash: not an argon2 hash; create one with `wildburrow hash-password`"),
+        (PasswordSettings(HASH, max_failures=0), "max_failures and block_seconds must be at least 1"),
+        (PasswordSettings(HASH, block_seconds=0), "max_failures and block_seconds must be at least 1"),
     ],
 )
 def test_password_config_errors(settings: PasswordSettings, message: str) -> None:
-    with pytest.raises(ConfigError, match=message):
+    with pytest.raises(ConfigError) as error:
         PasswordAuth(settings)
+    assert str(error.value) == message
+
+
+def test_password_limits_of_one_are_allowed() -> None:
+    PasswordAuth(PasswordSettings(HASH, max_failures=1, block_seconds=1))
 
 
 async def test_password_accepts_the_right_password() -> None:

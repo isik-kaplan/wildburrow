@@ -34,7 +34,6 @@ class TokenCredential:
 
 @dataclass(frozen=True, slots=True)
 class SignedChallengeCredential:
-    username: str
     public_key: bytes
     message: bytes
     signature: str
@@ -55,7 +54,9 @@ class StreamWriter(Protocol):
     async def drain(self) -> None: ...
 
 
-class Tunnel(Protocol):
-    identity: Identity
-
+class Destination(Protocol):
     async def open_stream(self, peer: Peer) -> tuple[StreamReader, StreamWriter]: ...
+
+
+class Tunnel(Destination, Protocol):
+    identity: Identity

@@ -103,3 +103,10 @@ def test_run_stops_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(ssh, "tunnel", interrupted)
     assert ssh.run(ClientConfig("s"), 3000, ["app"], "localhost") == 130
+
+
+async def test_ssh_output_is_echoed_as_text_without_line_endings() -> None:
+    lines: list[str] = []
+    script = "import sys; sys.stdout.buffer.write(b'\\xff trailing X  \\r\\nendsX\\n'); sys.exit(3)"
+    assert await ssh.tunnel([sys.executable, "-c", script], lines.append) == 3
+    assert lines == ["\ufffd trailing X  ", "endsX"]

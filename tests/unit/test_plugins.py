@@ -30,3 +30,9 @@ def test_missing_plugin_setting_names_the_variable() -> None:
 def test_plugin_errors_name_the_plugin() -> None:
     with pytest.raises(ConfigError, match=r"^auth plugin 'key': authorized_keys: no keys found$"):
         plugins.load("auth", "key", {f"{PREFIX}AUTH_KEY_AUTHORIZED_KEYS": "# nothing"})
+
+
+def test_an_empty_kind_says_none_are_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plugins, "entry_points", lambda group: [])
+    with pytest.raises(ConfigError, match=r"^unknown dns plugin 'x'; installed: none$"):
+        plugins.load("dns", "x", {})

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import ipaddress
 import struct
 from collections.abc import Iterable
@@ -7,6 +8,8 @@ from wildburrow.core.types import Peer
 
 V1_PREFIX = b"PROXY "
 V1_MAX_LENGTH = 107
+V1_FAMILIES = {"TCP4": 4, "TCP6": 6}
+MAX_PORT = 65535
 V2_SIGNATURE = b"\r\n\r\n\x00\r\nQUIT\n"
 V2_HEADER = struct.Struct(">12sBBH")
 V2_IPV4 = struct.Struct(">4s4sHH")
@@ -22,7 +25,7 @@ class ProxyHeaderError(Exception):
 
 
 def networks(cidrs: Iterable[str]) -> list[Network]:
-    return [ipaddress.ip_network(cidr, strict=False) for cidr in cidrs]
+    return [ipaddress.ip_interface(cidr).network for cidr in cidrs]
 
 
 def trusted(host: str, allowed: list[Network]) -> bool:
@@ -53,19 +56,22 @@ async def _read_line(reader: asyncio.StreamReader) -> bytes:
 
 
 def _v1(line: bytes, fallback: Peer) -> Peer:
-    parts = line.decode("ascii", errors="replace").removesuffix("\r\n").split(" ")
+    parts = line.decode().removesuffix("\r\n").split(" ") if line.isascii() else []
     if len(parts) >= 2 and parts[1] == "UNKNOWN":
         return fallback
-    if len(parts) != 6 or parts[1] not in ("TCP4", "TCP6"):
+    if len(parts) != 6 or parts[1] not in V1_FAMILIES:
         raise ProxyHeaderError("malformed PROXY v1 header")
-    try:
-        address = ipaddress.ip_address(parts[2])
-        port = int(parts[4])
-    except ValueError:
-        raise ProxyHeaderError("malformed PROXY v1 address") from None
-    if address.version != (4 if parts[1] == "TCP4" else 6) or not 0 <= port <= 65535:
-        raise ProxyHeaderError("malformed PROXY v1 address")
-    return Peer(str(address), port)
+    version = V1_FAMILIES[parts[1]]
+    _v1_endpoint(parts[3], parts[5], version)
+    return _v1_endpoint(parts[2], parts[4], version)
+
+
+def _v1_endpoint(address: str, port: str, version: int) -> Peer:
+    with contextlib.suppress(ValueError):
+        parsed = ipaddress.ip_address(address)
+        if parsed.version == version and port.isdigit() and int(port) <= MAX_PORT:
+            return Peer(str(parsed), int(port))
+    raise ProxyHeaderError("malformed PROXY v1 address")
 
 
 def _v2(version_command: int, family: int, payload: bytes, fallback: Peer) -> Peer:

@@ -7,10 +7,12 @@ from wildburrow.config import ConfigError
 from wildburrow.core.types import Identity, Peer, TokenCredential
 
 PREFIX = "wb_"
+TOKEN_BYTES = 32
 
 
 def new_token() -> str:
-    return PREFIX + secrets.token_urlsafe(32)
+    # The only mutant left here, token_urlsafe(None), asks for the default of 32 bytes.
+    return PREFIX + secrets.token_urlsafe(TOKEN_BYTES)  # pragma: no mutate
 
 
 def digest(token: str) -> str:

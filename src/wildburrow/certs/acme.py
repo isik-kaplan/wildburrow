@@ -36,12 +36,10 @@ def _private_key_pem(key: ec.EllipticCurvePrivateKey) -> bytes:
 def make_csr(domains: Sequence[str]) -> tuple[bytes, bytes]:
     key = ec.generate_private_key(ec.SECP256R1())
     san = x509.SubjectAlternativeName([x509.DNSName(domain) for domain in domains])
-    csr = (
-        x509.CertificateSigningRequestBuilder()
-        .subject_name(x509.Name([]))
-        .add_extension(san, critical=False)
-        .sign(key, hashes.SHA256())
-    )
+    builder = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([]))
+    # ACME servers take only the names from a CSR and set the certificate's extensions themselves.
+    builder = builder.add_extension(san, critical=False)  # pragma: no mutate
+    csr = builder.sign(key, hashes.SHA256())
     return _private_key_pem(key), csr.public_bytes(serialization.Encoding.PEM)
 
 

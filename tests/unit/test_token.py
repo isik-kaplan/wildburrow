@@ -9,6 +9,7 @@ PEER = Peer("192.0.2.1", 1)
 
 def test_new_tokens_are_unique_and_prefixed() -> None:
     tokens = {new_token() for _ in range(100)}
+    assert {len(token) for token in tokens} == {len(PREFIX) + 43}
     assert len(tokens) == 100
     assert all(token.startswith(PREFIX) and len(token) > 40 for token in tokens)
 
@@ -24,17 +25,19 @@ async def test_tokens_match_by_hash() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("", "no tokens found"),
-        ("# only comments", "no tokens found"),
-        ("nocolon", "expected 'name:sha256hex'"),
-        (f":{'a' * 64}", "expected 'name:sha256hex'"),
-        ("name:abc", "expected 'name:sha256hex'"),
-        (f"name:{'A' * 64}", "expected 'name:sha256hex'"),
+        ("", "hashes: no tokens found"),
+        ("# only comments", "hashes: no tokens found"),
+        ("nocolon", "hashes: expected 'name:sha256hex', got 'nocolon'"),
+        (f":{'a' * 64}", f"hashes: expected 'name:sha256hex', got ':{'a' * 39}'"),
+        ("name:abc", "hashes: expected 'name:sha256hex', got 'name:abc'"),
+        (f"name:{'A' * 64}", f"hashes: expected 'name:sha256hex', got 'name:{'A' * 35}'"),
+        (f"name:{'X' * 64}", f"hashes: expected 'name:sha256hex', got 'name:{'X' * 35}'"),
     ],
 )
 def test_config_errors(text: str, message: str) -> None:
-    with pytest.raises(ConfigError, match=message):
+    with pytest.raises(ConfigError) as error:
         TokenAuth(TokenSettings(text))
+    assert str(error.value) == message
 
 
 def test_token_is_hidden_from_repr() -> None:

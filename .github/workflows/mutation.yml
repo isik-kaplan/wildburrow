@@ -1,0 +1,50 @@
+name: Mutation
+
+# Pull requests and pushes re-test only the mutants a change can reach, starting from the newest cached run;
+# a manual run with `full` re-tests every mutant.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Re-test every mutant instead of only what changed
+        type: boolean
+        default: false
+
+# A run cancelled part way never saves the results that make the next one cheap.
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutmut:
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+      - run: docker pull ghcr.io/letsencrypt/pebble:2.10.1
+      - run: docker pull ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
+      - run: uv sync --locked --all-extras
+      - id: key
+        run: echo "key=mutmut-$(uv run python -m scripts.mutation key)" >> "$GITHUB_OUTPUT"
+      - if: ${{ !inputs.full }}
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: mutants
+          key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.key.outputs.key }}-
+      - run: uv run python -m scripts.mutation run ${{ inputs.full && '--full' || '' }}
+      # Saved even when mutants survive or the job times out, so the next run picks up from here.
+      - if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: mutants
+          key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}

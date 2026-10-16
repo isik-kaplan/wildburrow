@@ -77,8 +77,7 @@ class _Client(asyncssh.SSHServer):
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
         self._live.add(conn)
-        host, port = conn.get_extra_info("peername")[:2]
-        self._peer = Peer(host, port)
+        self._peer = Peer(*conn.get_extra_info("peername")[:2])
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._closed = True
@@ -121,7 +120,8 @@ class _Client(asyncssh.SSHServer):
             return False
         if self._closed:
             self._ctx.registry.unbind(name, tunnel)
-            return False
+            # The connection is gone, so nothing reads this answer.
+            return False  # pragma: no mutate
         log.info("%s bound %s from %s", self._identity.name, name, self._peer.host)
         self.notify(f"{protocol.READY}{self._ctx.url(name)}")
         return _Listener(self._ctx.registry, name, tunnel, port)

@@ -1,11 +1,15 @@
 import asyncio
+import hashlib
 import logging
+import re
 import ssl
+import stat
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import josepy
 import pytest
 from acme import challenges, messages
 from cryptography import x509
@@ -13,10 +17,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from wildburrow.auth.base import Authenticator
+from wildburrow.certs import acme as acme_module
 from wildburrow.certs.acme import ACMEIssuer, IssueError, make_csr
 from wildburrow.certs.manager import CertManager
 from wildburrow.certs.store import CertStore
+from wildburrow.core.context import CertificateFailed, ServerContext
 from wildburrow.core.names import Name
+from wildburrow.core.types import Identity
+from wildburrow.dns.base import DNSError
 
 DOMAIN = "tunnel.example.com"
 NOW = datetime(2026, 10, 14, tzinfo=UTC)
@@ -223,3 +232,172 @@ async def test_issue_fails_without_a_dns_challenge(tmp_path: Path) -> None:
     issuer = ACMEIssuer("https://acme.invalid/dir", "", tmp_path, DNS(), 0, 1)
     with pytest.raises(IssueError, match=f"no dns-01 challenge offered for {DOMAIN}"):
         await issuer._issue(acme_client, None, [DOMAIN])
+
+
+JWK = josepy.JWKEC(key=ec.generate_private_key(ec.SECP256R1()))
+DIRECTORY = "https://acme.invalid/dir"
+
+
+def authorization(domain: str, status: messages.Status = messages.STATUS_PENDING) -> SimpleNamespace:
+    dns01 = messages.ChallengeBody(chall=challenges.DNS01(token=b"t" * 16), uri="https://x/c")
+    identifier = messages.Identifier(typ=messages.IDENTIFIER_FQDN, value=domain)
+    return SimpleNamespace(body=SimpleNamespace(status=status, identifier=identifier, challenges=[dns01]))
+
+
+class RecordingDNS:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.created: list[str] = []
+        self.deleted: list[object] = []
+        self.failure = failure
+
+    async def create_txt(self, fqdn: str, value: str) -> str:
+        self.created.append(fqdn)
+        return f"record-{len(self.created)}"
+
+    async def delete_txt(self, record: object) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.deleted.append(record)
+
+
+class FakeACME:
+    def __init__(self, *authorizations: SimpleNamespace) -> None:
+        self.order = SimpleNamespace(authorizations=list(authorizations))
+        self.answered: list[object] = []
+        self.deadline: datetime | None = None
+
+    def new_order(self, csr_pem: bytes) -> SimpleNamespace:
+        return self.order
+
+    def answer_challenge(self, challenge: object, response: object) -> None:
+        self.answered.append(challenge)
+
+    def poll_and_finalize(self, order: object, deadline: datetime) -> SimpleNamespace:
+        self.deadline = deadline
+        return SimpleNamespace(fullchain_pem="chain")
+
+
+async def test_issue_answers_every_pending_authorization_and_cleans_up(tmp_path: Path) -> None:
+    valid, first, second = authorization("a.example.com", messages.STATUS_VALID), *map(authorization, "bc")
+    acme_client = FakeACME(valid, first, second)
+    dns = RecordingDNS()
+    issuer = ACMEIssuer(DIRECTORY, "", tmp_path, dns, 0, 90)
+    started = datetime.now()
+    assert (await issuer._issue(acme_client, JWK, ["b", "c"]))[1] == b"chain"
+    assert dns.created == ["_acme-challenge.b", "_acme-challenge.c"]
+    assert dns.deleted == ["record-1", "record-2"]
+    assert acme_client.answered == [first.body.challenges[0], second.body.challenges[0]]
+    assert started + timedelta(seconds=90) <= acme_client.deadline <= datetime.now() + timedelta(seconds=90)
+
+
+async def test_a_challenge_record_that_will_not_go_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    issuer = ACMEIssuer(DIRECTORY, "", tmp_path, RecordingDNS(DNSError("nope")), 0, 1)
+    assert (await issuer._issue(FakeACME(authorization("b")), JWK, ["b"]))[1] == b"chain"
+    assert caplog.record_tuples == [
+        ("wildburrow.certs.acme", logging.WARNING, "could not remove a challenge record: nope")
+    ]
+
+
+@pytest.mark.parametrize(("email", "contact"), [("ops@example.com", ("mailto:ops@example.com",)), ("", ())])
+def test_the_account_is_private_and_registered_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, email: str, contact: tuple[str, ...]
+) -> None:
+    networks: list[SimpleNamespace] = []
+    registrations: list[messages.NewRegistration] = []
+
+    class Network(SimpleNamespace):
+        def __init__(self, jwk: josepy.JWKEC, alg: object, user_agent: str) -> None:
+            super().__init__(jwk=jwk, user_agent=user_agent, account=None)
+            networks.append(self)
+
+    class Client:
+        get_directory = staticmethod(lambda url, net: url)
+
+        def __init__(self, directory: str, net: Network) -> None:
+            assert directory == DIRECTORY
+
+        def new_account(self, registration: messages.NewRegistration) -> messages.RegistrationResource:
+            registrations.append(registration)
+            return messages.RegistrationResource(body=registration, uri="https://acme.invalid/account/1")
+
+    monkeypatch.setattr(acme_module.client, "ClientNetwork", Network)
+    monkeypatch.setattr(acme_module.client, "ClientV2", Client)
+    _, jwk = ACMEIssuer(DIRECTORY, email, tmp_path, RecordingDNS(), 0, 1)._connect()
+    _, again = ACMEIssuer(DIRECTORY, email, tmp_path, RecordingDNS(), 0, 1)._connect()
+
+    state = tmp_path / hashlib.sha256(DIRECTORY.encode()).hexdigest()[:16]
+    assert sorted(path.name for path in tmp_path.iterdir()) == [state.name]
+    assert sorted(path.name for path in state.iterdir()) == ["account.json", "account.key"]
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "account.key").stat().st_mode) == 0o600
+    assert [(r.contact, r.terms_of_service_agreed) for r in registrations] == [(contact, True)]
+    assert [(n.user_agent, n.account) for n in networks] == [("wildburrow", None), ("wildburrow", networks[1].account)]
+    assert networks[1].account.uri == "https://acme.invalid/account/1"
+    assert again.thumbprint() == jwk.thumbprint()
+
+
+def test_the_store_layout(tmp_path: Path) -> None:
+    store = CertStore(tmp_path)
+    store.save("foo", *self_signed(["*.foo"], NOW + timedelta(days=5)))
+    assert sorted(path.name for path in (tmp_path / "foo").iterdir()) == ["chain.pem", "key.pem"]
+    assert stat.S_IMODE((tmp_path / "foo" / "chain.pem").stat().st_mode) == 0o644
+
+
+async def test_certificates_expire_and_renew_on_the_boundary(tmp_path: Path) -> None:
+    clock = Clock()
+    issuer = FakeIssuer(lifetime=timedelta(days=40))
+    certs = manager(tmp_path, issuer, clock=clock)
+    await certs.ensure(DOMAIN)
+    clock.now = NOW + timedelta(days=10)
+    await certs.renew_due([])
+    assert len(issuer.calls) == 1
+    clock.now = NOW + timedelta(days=40)
+    assert not certs.ready(DOMAIN)
+
+
+async def test_a_failed_certificate_is_logged_and_releases_the_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ctx = ServerContext(DOMAIN, 5, tmp_path, Authenticator([]))
+    ctx.certs = manager(tmp_path, FakeIssuer(fail=1))
+    tunnel = SimpleNamespace(identity=Identity("a", "key", "a"))
+    with pytest.raises(
+        CertificateFailed, match=rf"^could not get a certificate for \*\.{re.escape(DOMAIN)}: issuance failed$"
+    ):
+        await ctx.bind("app", tunnel, lambda text: None)
+    assert ctx.registry.names() == []
+    assert [(r.name, r.levelno, r.getMessage()) for r in caplog.records] == [
+        ("wildburrow.core.context", logging.ERROR, f"certificate for *.{DOMAIN} failed")
+    ]
+
+
+async def test_issuing_and_failing_are_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    clock = Clock()
+    issuer = FakeIssuer(lifetime=timedelta(days=40))
+    certs = manager(tmp_path, issuer, clock=clock)
+    await certs.ensure(f"app.{DOMAIN}")
+    await certs.ensure(DOMAIN)
+    clock.now += timedelta(days=15)
+    issuer.fail = 1
+    await certs.renew_due([])
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.INFO, f"requesting a certificate for *.app.{DOMAIN}"),
+        (logging.INFO, f"requesting a certificate for *.{DOMAIN}, {DOMAIN}"),
+        (logging.INFO, f"requesting a certificate for *.{DOMAIN}, {DOMAIN}"),
+        (logging.ERROR, f"renewing *.{DOMAIN} failed; will retry"),
+    ]
+
+
+async def test_maintain_says_when_it_retries(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    certs = manager(tmp_path, FakeIssuer(fail=1))
+    task = asyncio.create_task(certs.maintain(list, interval=60, retry=0))
+    async with asyncio.timeout(5):
+        while not certs.ready(DOMAIN):
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
+        f"getting the *.{DOMAIN} certificate failed; retrying in 0s"
+    ]

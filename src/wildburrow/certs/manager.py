@@ -59,7 +59,7 @@ class CertManager:
         if task is None:
             task = asyncio.create_task(self._obtain(parent))
             self._inflight[parent] = task
-            task.add_done_callback(lambda _: self._inflight.pop(parent, None))
+            task.add_done_callback(lambda _: self._inflight.pop(parent))
         await asyncio.shield(task)
 
     async def _obtain(self, parent: str) -> None:

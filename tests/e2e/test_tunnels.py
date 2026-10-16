@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import socket
 
 import asyncssh
@@ -255,3 +256,110 @@ async def test_rejection_ends_the_session(
         async with asyncio.timeout(TIMEOUT):
             assert (await process.stdout.readline()).startswith("rejected: ")
             assert (await process.wait()).exit_status == 1
+
+
+async def test_unnamed_forwards_are_refused_with_a_hint(start_server: StartServer, connect: Connect) -> None:
+    running = await start_server()
+    client = await connect(running.ssh_port, "key", "-R", "80:127.0.0.1:9")
+    assert await client.line("give") == "give the tunnel a name, e.g. -R myapp:80:localhost:3000"
+    assert await client.wait() == 1
+
+
+async def test_dynamic_ports_are_reported_as_80(
+    start_server: StartServer, credentials: Credentials, backend: Backend
+) -> None:
+    running = await start_server()
+    async with ssh_session(running, credentials) as conn:
+        listener = await conn.forward_remote_port("dyn", 0, "127.0.0.1", backend.port)
+        assert listener.get_port() == 80
+        assert (await get(running.http_port, f"dyn.{DOMAIN}"))[0] == 200
+
+
+async def test_ssh_logins_must_finish_in_time(start_server: StartServer) -> None:
+    running = await start_server(WILDBURROW_SSH_LOGIN_TIMEOUT="1")
+    reader, writer = await asyncio.open_connection("127.0.0.1", running.ssh_port)
+    async with asyncio.timeout(TIMEOUT):
+        assert (await reader.readline()).startswith(b"SSH-2.0-")
+        while await reader.read(65536):
+            pass
+    writer.close()
+
+
+async def test_ssh_logins_and_binds_are_logged(
+    start_server: StartServer, connect: Connect, backend: Backend, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server()
+    assert await (await connect(running.ssh_port, "password", wrong=True)).wait() == 255
+    client = await connect(running.ssh_port, "key", *forward("app", backend.port))
+    await client.line("ready:")
+    assert {("wildburrow.transports.ssh", logging.INFO, message) for message in (
+        "auth failed for tester from 127.0.0.1", "laptop bound app from 127.0.0.1"
+    )} <= set(caplog.record_tuples)  # fmt: skip
+
+
+async def test_failed_logins_name_the_user_for_every_method(
+    start_server: StartServer, credentials: Credentials, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server()
+    attempts = [
+        {"username": "keyuser", "client_keys": [str(credentials.other_key)], "preferred_auth": "publickey"},
+        {"username": "pwuser", "client_keys": None, "password": "wrong", "preferred_auth": "password"},
+    ]
+    for options in attempts:
+        with pytest.raises(asyncssh.PermissionDenied):
+            await asyncssh.connect("127.0.0.1", running.ssh_port, known_hosts=None, agent_path=None, **options)
+    assert {("wildburrow.transports.ssh", logging.INFO, f"auth failed for {user} from 127.0.0.1") for user in (
+        "keyuser", "pwuser"
+    )} <= set(caplog.record_tuples)  # fmt: skip
+
+
+async def test_ipv6_ssh_clients_bind_and_leave_no_trace(
+    start_server: StartServer, credentials: Credentials, backend: Backend
+) -> None:
+    running = await start_server(WILDBURROW_SSH_HOST="::1")
+    async with asyncssh.connect(
+        "::1",
+        running.ssh_port,
+        username="tester",
+        client_keys=[str(credentials.key)],
+        known_hosts=None,
+        agent_path=None,
+    ) as conn:
+        await conn.forward_remote_port("six", 80, "127.0.0.1", backend.port)
+        assert (await get(running.http_port, f"six.{DOMAIN}"))[0] == 200
+    async with asyncio.timeout(TIMEOUT):
+        while running.server.transports[0]._live:
+            await asyncio.sleep(0.05)
+
+
+async def test_forwarded_channels_carry_the_visitor_and_refusals_are_reported(
+    start_server: StartServer, credentials: Credentials, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    running = await start_server()
+    origins: list[tuple[str, int]] = []
+
+    def session(orig_host: str, orig_port: int) -> None:
+        origins.append((orig_host, orig_port))
+        raise asyncssh.ChannelOpenError(asyncssh.OPEN_CONNECT_FAILED, "nobody home")
+
+    async with ssh_session(running, credentials) as conn:
+        await conn.create_server(session, "visited", 80)
+        reader, writer = await asyncio.open_connection("127.0.0.1", running.http_port)
+        writer.write(f"GET / HTTP/1.1\r\nHost: visited.{DOMAIN}\r\n\r\n".encode())
+        async with asyncio.timeout(TIMEOUT):
+            assert (await reader.read()).startswith(b"HTTP/1.1 502 ")
+        visitor = writer.get_extra_info("sockname")
+        writer.close()
+    assert origins == [visitor[:2]]
+    refusals = [m for name, _, m in caplog.record_tuples if name == "wildburrow.edge.http"]
+    assert refusals == [f"could not reach the client for visited.{DOMAIN}: nobody home"]
+
+
+async def test_an_unnamed_forward_is_refused_to_the_client(start_server: StartServer, credentials: Credentials) -> None:
+    running = await start_server()
+    async with ssh_session(running, credentials) as conn:
+        with pytest.raises(asyncssh.ChannelListenError):
+            await conn.forward_remote_port("", 0, "127.0.0.1", 9)

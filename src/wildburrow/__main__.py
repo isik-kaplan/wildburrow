@@ -22,6 +22,9 @@ AUTH_METHODS = ["key", "password", "token"]
 CLIENT_OPTIONS = (
     "ssh_port", "user", "transport", "auth", "identity", "url", "reconnect", "retry_delay", "retry_max",
 )  # fmt: skip
+DEFAULTS = ClientConfig("")
+PROG = "wildburrow"
+ON_OFF = {True: "on", False: "off"}
 
 
 def _seconds(raw: str) -> float:
@@ -34,8 +37,8 @@ def _seconds(raw: str) -> float:
     return value
 
 
-def _client_options(parser: argparse.ArgumentParser, defaults: bool) -> None:
-    default = ClientConfig("")
+def _client_options(parser: argparse.ArgumentParser, defaults: ClientConfig | None) -> None:
+    default = defaults or DEFAULTS
     parser.add_argument("--ssh-port", type=int, default=default.ssh_port if defaults else None)
     parser.add_argument("--user", default=default.user if defaults else None)
     parser.add_argument("--transport", choices=TRANSPORTS, default=default.transport if defaults else None)
@@ -46,7 +49,7 @@ def _client_options(parser: argparse.ArgumentParser, defaults: bool) -> None:
         "--reconnect",
         action=argparse.BooleanOptionalAction,
         default=default.reconnect if defaults else None,
-        help=f"reconnect when the connection drops (default: {'on' if default.reconnect else 'off'})",
+        help=f"reconnect when the connection drops (default: {ON_OFF[default.reconnect]})",
     )
     parser.add_argument(
         "--retry-delay",
@@ -65,8 +68,8 @@ def _client_options(parser: argparse.ArgumentParser, defaults: bool) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="wildburrow", description="Expose local ports on your own domain.")
-    parser.add_argument("--version", action="version", version=version("wildburrow"))
+    parser = argparse.ArgumentParser(prog=PROG, description="Expose local ports on your own domain.")
+    parser.add_argument("--version", action="version", version=version(PROG))
     commands = parser.add_subparsers(dest="command", required=True)
 
     connect = commands.add_parser("connect", help="tunnel a local port (default command)")
@@ -74,12 +77,12 @@ def _parser() -> argparse.ArgumentParser:
     connect.add_argument("names", nargs="+", metavar="name", help="e.g. myapp, '*.foo', '*.bar.foo'")
     connect.add_argument("--server")
     connect.add_argument("--local-host", default="localhost")
-    _client_options(connect, defaults=False)
+    _client_options(connect, None)
 
     login = commands.add_parser("login", help="save the server and how to connect to it")
     login.add_argument("server")
     login.add_argument("--token", default="")
-    _client_options(login, defaults=True)
+    _client_options(login, DEFAULTS)
 
     commands.add_parser("serve", help="run the server (configured through WILDBURROW_* variables)")
     commands.add_parser("hash-password", help="print an argon2 hash for the password auth plugin")
@@ -97,7 +100,7 @@ def _connect(args: argparse.Namespace) -> int:
     overrides = {field: getattr(args, field) for field in CLIENT_OPTIONS if getattr(args, field) is not None}
     if token := os.environ.get(TOKEN_ENV):
         overrides["token"] = token
-    config = dataclasses.replace(saved or ClientConfig(server), server=server, **overrides)
+    config = dataclasses.replace(saved, server=server, **overrides) if saved else ClientConfig(server, **overrides)
     if config.transport == "websocket":
         return websocket.run(config, args.port, args.names, args.local_host)
     return ssh.run(config, args.port, args.names, args.local_host)

@@ -26,9 +26,9 @@ class ClientError(Exception):
 def websocket_base(config: ClientConfig) -> str:
     base = config.url or f"https://{config.server}"
     if base.startswith("https://"):
-        return "wss://" + base.removeprefix("https://").rstrip("/")
+        return "wss://" + base.removeprefix("https://").removesuffix("/")
     if base.startswith("http://"):
-        return "ws://" + base.removeprefix("http://").rstrip("/")
+        return "ws://" + base.removeprefix("http://").removesuffix("/")
     raise ClientError(f"url must start with https:// or http://, got {base!r}")
 
 
@@ -42,12 +42,8 @@ def identity_file(config: ClientConfig) -> Path:
 
 
 def sign(key: Path, namespace: str, message: bytes) -> str:
-    result = subprocess.run(  # noqa: S603
-        ["ssh-keygen", "-Y", "sign", "-q", "-f", str(key), "-n", namespace],  # noqa: S607
-        input=message,
-        capture_output=True,
-        check=False,
-    )
+    command = ["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", namespace]
+    result = subprocess.run(command, input=message, capture_output=True)  # noqa: S603
     if result.returncode != 0:
         raise ClientError(f"ssh-keygen could not sign the login challenge: {result.stderr.decode().strip()}")
     return result.stdout.decode()

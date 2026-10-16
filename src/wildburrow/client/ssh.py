@@ -10,10 +10,11 @@ from wildburrow.client.retry import Backoff
 REMOTE_PORT = 80
 CONNECTION_FAILED = 255
 TERMINATED = 128 + signal.SIGTERM
+KEEPALIVE = ("-o", "ServerAliveInterval=30")
 
 
 def ssh_command(config: ClientConfig, port: int, names: Sequence[str], local_host: str) -> list[str]:
-    command = ["ssh", "-T", "-p", str(config.ssh_port), "-o", "ServerAliveInterval=30"]
+    command = ["ssh", "-T", "-p", str(config.ssh_port), *KEEPALIVE]
     for name in names:
         command += ["-R", f"{name}:{REMOTE_PORT}:{local_host}:{port}"]
     command += ["--", f"{config.username}@{config.server}"]

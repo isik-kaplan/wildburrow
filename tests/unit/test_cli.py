@@ -1,6 +1,9 @@
 import builtins
 import dataclasses
+import logging
+import re
 import runpy
+import stat
 import sys
 import tomllib
 from importlib.metadata import version
@@ -14,7 +17,7 @@ from hypothesis import strategies as st
 from wildburrow import __main__ as cli
 from wildburrow.auth.token import digest
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
-from wildburrow.client.ssh import ssh_command
+from wildburrow.client.ssh import KEEPALIVE, ssh_command
 from wildburrow.config import PREFIX
 
 
@@ -73,6 +76,7 @@ def test_username_falls_back_to_the_local_user(monkeypatch: pytest.MonkeyPatch) 
 def test_ssh_command() -> None:
     command = ssh_command(ClientConfig("tunnel.example.com", 2200, "me"), 3000, ["*.foo", "app"], "localhost")
     assert command[:2] == ["ssh", "-T"]
+    assert command[4:6] == list(KEEPALIVE)
     assert command[command.index("-p") + 1] == "2200"
     assert [command[i + 1] for i, arg in enumerate(command) if arg == "-R"] == [
         "*.foo:80:localhost:3000",
@@ -102,7 +106,7 @@ def test_connect_without_saved_config(execs: list[list[str]], monkeypatch: pytes
 
 def test_connect_needs_a_server(capsys: pytest.CaptureFixture[str], execs: list[list[str]]) -> None:
     assert cli.main(["3000", "a"]) == 2
-    assert "wildburrow login" in capsys.readouterr().err
+    assert capsys.readouterr().err == "no server configured: run `wildburrow login <server>` or pass --server\n"
     assert execs == []
 
 
@@ -140,16 +144,18 @@ def test_server_commands_need_the_extra(
 
 
 def test_hash_password(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "pw")
+    prompts: list[str] = []
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: prompts.append(prompt) or "pw")
     assert cli.main(["hash-password"]) == 0
     assert PasswordHasher().verify(capsys.readouterr().out.strip(), "pw")
+    assert prompts == ["password: ", "again: "]
 
 
 def test_hash_password_mismatch(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     answers = iter(["one", "two"])
     monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(answers))
     assert cli.main(["hash-password"]) == 1
-    assert "do not match" in capsys.readouterr().err
+    assert capsys.readouterr().err == "passwords do not match\n"
 
 
 def test_serve_runs_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,3 +235,62 @@ def test_token_command(capsys: pytest.CaptureFixture[str]) -> None:
     token = token_line.rsplit(" ", 1)[1]
     assert server_line.endswith(f"ci:{digest(token)}")
     assert f"{PREFIX}AUTH_TOKEN_HASHES" in server_line
+
+
+def test_serve_logs_with_timestamps(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(logging.root, "handlers", [])
+    monkeypatch.setattr(logging.root, "level", logging.WARNING)
+
+    async def fake_serve(env) -> None:
+        logging.getLogger("wildburrow.test").info("hello")
+
+    monkeypatch.setattr("wildburrow.server.serve", fake_serve)
+    assert cli.main(["serve"]) == 0
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} INFO wildburrow.test hello\n", capsys.readouterr().err)
+
+
+def test_config_is_private_from_the_start(monkeypatch: pytest.MonkeyPatch, config_home: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home / "missing" / "config"))
+    modes: list[int] = []
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: modes.append(stat.S_IMODE(self.stat().st_mode)))
+    assert cli.main(["login", "s", "--token", "secret"]) == 0
+    assert modes == [0o600]
+    assert stat.S_IMODE(config_path().parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("option", ["--transport", "--auth"])
+def test_unknown_choices_are_refused(option: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["3000", "a", "--server", "s", option, "pigeon"])
+    assert exit_info.value.code == 2
+    assert f"{option}: invalid choice: 'pigeon'" in capsys.readouterr().err
+
+
+HELP = Path(__file__).parent / "help"
+
+
+@pytest.mark.parametrize("page", sorted({*cli.COMMANDS, "wildburrow"}))
+def test_help(page: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("COLUMNS", "100")
+    monkeypatch.setenv("PYTHON_COLORS", "0")
+    with pytest.raises(SystemExit):
+        cli.main([*([] if page == "wildburrow" else [page]), "--help"])
+    assert capsys.readouterr().out == (HELP / f"{page}.txt").read_text()
+
+
+def test_connect_keeps_every_saved_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    configs: list[ClientConfig] = []
+    monkeypatch.setattr(cli.websocket, "run", lambda config, *args: configs.append(config) or 0)
+    args = ["login", "s", "--ssh-port", "1", "--user", "u", "--transport", "websocket", "--auth", "token"]
+    args += ["--identity", "~/k", "--token", "t", "--url", "https://x"]
+    args += ["--no-reconnect", "--retry-delay", "0.5", "--retry-max", "10"]
+    cli.main(args)
+    cli.main(["3000", "a"])
+    assert configs == [read_config(config_path())]
+
+
+def test_a_command_is_required(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main([])
+    assert exit_info.value.code == 2
+    assert capsys.readouterr().err.endswith("error: the following arguments are required: command\n")

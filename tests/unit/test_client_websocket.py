@@ -1,5 +1,7 @@
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
@@ -20,6 +22,7 @@ NO_WAIT = Backoff(0, 0)
         (ClientConfig("tunnel.example.com"), "wss://tunnel.example.com"),
         (ClientConfig("s", url="https://other.example.com:8443/"), "wss://other.example.com:8443"),
         (ClientConfig("s", url="http://localhost:8000"), "ws://localhost:8000"),
+        (ClientConfig("s", url="http://box/"), "ws://box"),
     ],
 )
 def test_websocket_base(config: ClientConfig, base: str) -> None:
@@ -34,7 +37,7 @@ def test_websocket_base_rejects_other_schemes() -> None:
 def test_identity_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     assert identity_file(ClientConfig("s", identity="~/k")) == tmp_path / "k"
-    with pytest.raises(ClientError, match="no SSH key found"):
+    with pytest.raises(ClientError, match=r"^no SSH key found; set one with `wildburrow login --identity PATH`$"):
         identity_file(ClientConfig("s"))
     (tmp_path / ".ssh").mkdir()
     (tmp_path / ".ssh" / "id_ecdsa").touch()
@@ -53,7 +56,13 @@ def test_hello_messages(tmp_path: Path) -> None:
     key = ClientConfig("s", user="me", auth="key", identity=str(tmp_path / "key"))
     assert hello(key, input) == {"method": "key", "username": "me", "public_key": "ssh-ed25519 AAAA laptop"}
     password = ClientConfig("s", user="me", auth="password")
-    assert hello(password, lambda prompt: "pw") == {"method": "password", "username": "me", "password": "pw"}
+    prompts: list[str] = []
+    assert hello(password, lambda prompt: prompts.append(prompt) or "pw") == {
+        "method": "password",
+        "username": "me",
+        "password": "pw",
+    }
+    assert prompts == ["password: "]
     assert hello(ClientConfig("s", auth="token", token="t"), input) == {"method": "token", "token": "t"}
     with pytest.raises(ClientError, match="no token configured"):
         hello(ClientConfig("s", auth="token"), input)
@@ -274,14 +283,14 @@ def test_backoff_doubles_up_to_the_maximum() -> None:
 @pytest.mark.parametrize(
     ("failure", "line"),
     [
-        (OSError("refused"), "error: could not connect to ws://s: refused"),
-        (FakeControl([welcome()]), "error: connection lost: the server closed the connection"),
+        (lambda: OSError("refused"), "error: could not connect to ws://s: refused"),
+        (lambda: FakeControl([welcome()]), "error: connection lost: the server closed the connection"),
     ],
 )
-async def test_reconnecting_can_be_turned_off(failure: FakeControl | Exception, line: str) -> None:
+async def test_reconnecting_can_be_turned_off(failure: Callable[[], FakeControl | Exception], line: str) -> None:
     lines: list[str] = []
     config = ClientConfig("s", auth="token", token="t", url="http://s", reconnect=False)
-    client = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=fake_connector(failure))
+    client = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=fake_connector(failure()))
     assert await client.run() == 1
     assert lines[-1] == line
 
@@ -302,6 +311,22 @@ def test_run_prints_to_stderr(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Ca
 
     monkeypatch.setattr(Client, "run", interrupted)
     assert websocket.run(config, 9, ["a"], "127.0.0.1") == 130
+
+
+def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+
+    class Recording:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen.append(args)
+
+        async def run(self) -> int:
+            return 5
+
+    monkeypatch.setattr(websocket, "Client", Recording)
+    config = ClientConfig("s", auth="token", url="http://s")
+    assert websocket.run(config, 9, ["a"], "127.0.0.1") == 5
+    assert seen == [(config, 9, ["a"], "127.0.0.1")]
 
 
 class FakeWS:
@@ -339,6 +364,13 @@ async def test_stream_reads_buffers_and_markers() -> None:
 async def test_stream_treats_a_closed_socket_as_eof() -> None:
     stream = protocol.WebSocketStream(FakeWS([ConnectionClosedOK(Close(1000, ""), None)]))
     assert await stream.read() == b""
+    assert await stream.read() == b""
+
+
+async def test_stream_reads_nothing_when_asked_for_nothing() -> None:
+    stream = protocol.WebSocketStream(FakeWS([b"abc"]))
+    assert await stream.read(0) == b""
+    assert await stream.read() == b"abc"
 
 
 async def test_stream_writes_on_drain_and_closes_once() -> None:
@@ -357,11 +389,87 @@ async def test_stream_writes_on_drain_and_closes_once() -> None:
     assert ws.closes == 1
     ws.fail_send = True
     stream.write(b"c")
-    with pytest.raises(BrokenPipeError):
+    with pytest.raises(BrokenPipeError) as error:
         await stream.drain()
+    assert str(error.value) == str(ConnectionClosedOK(Close(1000, ""), None))
 
 
 @pytest.mark.parametrize("message", ["[]", '{"type": 1}', "{}"])
 def test_decode_rejects_non_messages(message: str) -> None:
-    with pytest.raises(ValueError, match="not a protocol message"):
+    with pytest.raises(ValueError, match=r"^not a protocol message$"):
         protocol.decode(message)
+
+
+async def test_a_stream_relays_the_local_port_over_its_own_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b"pong:" + await reader.read(4))
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(echo, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    opened: list[tuple[str, int]] = []
+    open_connection = asyncio.open_connection
+
+    async def local(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        opened.append((host, port))
+        return await open_connection("127.0.0.1", port)
+
+    monkeypatch.setattr(websocket.asyncio, "open_connection", local)
+    hold = asyncio.Event()
+    control = FakeControl(
+        [welcome(), protocol.encode("status", message="issuing"), protocol.encode("open", id="s1")], hold
+    )
+    data = FakeWS([b"ping", protocol.EOF_MARKER])
+    connections: list[tuple[str, dict]] = []
+
+    def connector(url: str, **kwargs: object) -> object:
+        connections.append((url, kwargs))
+        if url.endswith(protocol.CONNECT_PATH):
+            return control if len(connections) == 1 else Refused()
+
+        async def connect() -> FakeWS:
+            return data
+
+        return connect()
+
+    lines: list[str] = []
+    config = ClientConfig("s", auth="token", token="t", url="http://s")
+    tunnel = Client(config, port, ["app"], "local.test", out=lines.append, connector=connector, backoff=NO_WAIT)
+    session = asyncio.create_task(tunnel.run())
+    async with server, asyncio.timeout(5):
+        while not data.closes or tunnel._streams:
+            await asyncio.sleep(0.01)
+    hold.set()
+    assert await session == 1
+    assert opened == [("local.test", port)]
+    assert connections[:2] == [
+        ("ws://s/_wildburrow/connect", {"proxy": None}),
+        ("ws://s/_wildburrow/data/s1", {"proxy": None}),
+    ]
+    assert data.sent == [b"pong:ping", protocol.EOF_MARKER]
+    assert lines[:2] == ["connected as ci", "issuing"]
+
+
+def test_hello_reads_the_public_half_and_sign_runs_ssh_keygen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    read: list[str] = []
+    monkeypatch.setattr(Path, "read_text", lambda self: read.append(self.name) or "ssh-ed25519 AAAA")
+    hello(ClientConfig("s", auth="key", identity=str(tmp_path / "key")), input)
+    assert read == ["key.pub"]
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        websocket.subprocess,
+        "run",
+        lambda command, **kwargs: commands.append(command) or SimpleNamespace(returncode=0, stdout=b"sig"),
+    )
+    assert sign(tmp_path / "key", "ns", b"m") == "sig"
+    assert commands == [["ssh-keygen", "-Y", "sign", "-f", str(tmp_path / "key"), "-n", "ns"]]
+
+
+async def test_a_stream_that_cannot_reach_its_port_or_the_server_ends_quietly(unused_tcp_port: int) -> None:
+    class Gone(FakeControl):
+        async def send(self, message: str) -> None:
+            raise ConnectionClosedOK(Close(1000, ""), None)
+
+    lines: list[str] = []
+    await client(unused_tcp_port, lines, fake_connector())._stream(Gone([]), "s1")

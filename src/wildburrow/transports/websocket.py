@@ -25,6 +25,11 @@ from wildburrow.core.types import (
 
 log = logging.getLogger(__name__)
 
+# A close reason has to fit a control frame.
+MAX_REASON = 100
+NONCE_BYTES = 32
+STREAM_ID_BYTES = 24
+
 
 @dataclass(frozen=True, slots=True)
 class WebSocketSettings:
@@ -39,16 +44,18 @@ class ProtocolError(Exception):
     pass
 
 
+def close_reason(exc: Exception) -> str:
+    return str(exc)[:MAX_REASON] or type(exc).__name__
+
+
 class _Root:
-    def __init__(self, host: str, port: int, peers: dict[int, Peer]) -> None:
-        self.identity = Identity("wildburrow", "internal", "wildburrow")
-        self._host = host
-        self._port = port
+    def __init__(self, address: tuple[str, int], peers: dict[int, Peer]) -> None:
+        self._address = address
         self._peers = peers
 
     async def open_stream(self, peer: Peer) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
-            reader, writer = await asyncio.open_connection(self._host, self._port)
+            reader, writer = await asyncio.open_connection(*self._address)
         except OSError as exc:
             raise TunnelUnavailable(str(exc)) from exc
         self._peers[writer.get_extra_info("sockname")[1]] = peer
@@ -80,7 +87,7 @@ class WebSocketTunnel:
         self._outbox = outbox
 
     async def open_stream(self, peer: Peer) -> tuple[protocol.WebSocketStream, protocol.WebSocketStream]:
-        stream_id = secrets.token_urlsafe(24)
+        stream_id = secrets.token_urlsafe(STREAM_ID_BYTES)
         waiter: asyncio.Future[ServerConnection] = asyncio.get_running_loop().create_future()
         self._transport.pending[stream_id] = waiter
         self._outbox.put("open", id=stream_id, peer=peer.host)
@@ -90,7 +97,7 @@ class WebSocketTunnel:
         except TimeoutError:
             raise TunnelUnavailable("the client did not open a stream in time") from None
         finally:
-            self._transport.pending.pop(stream_id, None)
+            del self._transport.pending[stream_id]
         stream = protocol.WebSocketStream(ws)
         return stream, stream
 
@@ -114,8 +121,7 @@ class WebSocketTransport:
             max_size=self.settings.max_message_bytes,
             server_header=None,
         )
-        host, port = self._server.sockets[0].getsockname()[:2]
-        ctx.root = _Root(host, port, self._peers)
+        ctx.root = _Root(self._server.sockets[0].getsockname()[:2], self._peers)
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -128,8 +134,8 @@ class WebSocketTransport:
         return connection.respond(HTTPStatus.NOT_FOUND, "not found\n")
 
     async def _handle(self, connection: ServerConnection) -> None:
-        host, port = connection.remote_address[:2]
-        peer = self._peers.pop(port, None) or Peer(host, port)
+        address = connection.remote_address[:2]
+        peer = self._peers.pop(address[1], None) or Peer(*address)
         path = connection.request.path  # type: ignore[union-attr]
         if path == protocol.CONNECT_PATH:
             await self._control(connection, peer)
@@ -148,7 +154,7 @@ class WebSocketTransport:
         except ConnectionClosed:
             return
         except (ProtocolError, ValueError, KeyError, TimeoutError) as exc:
-            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
+            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, close_reason(exc))
             return
         if identity is None:
             log.info("websocket login failed from %s", peer.host)
@@ -171,7 +177,7 @@ class WebSocketTransport:
             pass
         except (ValueError, KeyError) as exc:
             await outbox.flush_and_stop()
-            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
+            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, close_reason(exc))
         finally:
             for name in bound:
                 self._ctx.registry.unbind(name, tunnel)
@@ -191,29 +197,30 @@ class WebSocketTransport:
         hello = protocol.decode(await connection.recv())
         if hello["type"] != "hello":
             raise ProtocolError("expected hello")
-        username = str(hello.get("username", ""))
         credential: Credential
         match hello["method"]:
             case "password":
-                credential = PasswordCredential(username, str(hello["password"]))
+                credential = PasswordCredential(str(hello["username"]), str(hello["password"]))
             case "token":
                 credential = TokenCredential(str(hello["token"]))
             case "key":
-                credential = await self._challenge(connection, username, str(hello["public_key"]))
+                credential = await self._challenge(connection, str(hello["public_key"]))
             case method:
                 raise ProtocolError(f"unknown method {method!r}")
         return await self._ctx.authenticator.authenticate(credential, peer)
 
-    async def _challenge(self, connection: ServerConnection, username: str, key: str) -> SignedChallengeCredential:
+    async def _challenge(self, connection: ServerConnection, key: str) -> SignedChallengeCredential:
         try:
             public_key = asyncssh.import_public_key(key).public_data
         except asyncssh.KeyImportError, ValueError:
             raise ProtocolError("unreadable public key") from None
-        message = protocol.challenge_message(self._ctx.domain, secrets.token_urlsafe(32))
+        # token_urlsafe(None) would ask for the default of 32 bytes, so that mutant is the same program.
+        nonce = secrets.token_urlsafe(NONCE_BYTES)  # pragma: no mutate
+        message = protocol.challenge_message(self._ctx.domain, nonce)
         await connection.send(
             protocol.encode("challenge", message=message.decode(), namespace=protocol.SIGNATURE_NAMESPACE)
         )
         answer = protocol.decode(await connection.recv())
         if answer["type"] != "signature":
             raise ProtocolError("expected signature")
-        return SignedChallengeCredential(username, public_key, message, str(answer["signature"]))
+        return SignedChallengeCredential(public_key, message, str(answer["signature"]))

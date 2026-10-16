@@ -1,5 +1,6 @@
 import asyncio
 import os
+import socket
 import subprocess
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack
@@ -244,3 +245,9 @@ async def get(port: int, host: str, path: str = "/") -> tuple[int, bytes]:
     response = await http(port, f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
     status = int(response.split(b" ", 2)[1]) if response else 0
     return status, response.split(b"\r\n\r\n", 1)[-1]
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]

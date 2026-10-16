@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Işık Kaplan" }]
-requires-python = ">=3.14"
+requires-python = ">=3.14.4"
 dependencies = [
     "websockets==17.2",
 ]
@@ -46,6 +46,7 @@ cloudflare = "wildburrow.dns.cloudflare:CloudflareDNS"
 [dependency-groups]
 dev = [
     "hypothesis==6.169.0",
+    "mutmut==3.8.0",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
@@ -74,7 +75,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF", "SIM", "PT"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--strict-markers --cov=wildburrow --cov-branch --cov-report=term-missing"
+addopts = "--strict-markers --cov --cov-branch --cov-report=term-missing"
 markers = [
     "e2e: drives real clients against a running server",
     "acme: needs Docker for a local Pebble ACME server",
@@ -83,10 +84,18 @@ filterwarnings = ["error"]
 timeout = 120
 
 [tool.coverage.run]
-source = ["wildburrow"]
+source = ["wildburrow", "scripts"]
 branch = true
 
 [tool.coverage.report]
 fail_under = 100
 show_missing = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
+
+[tool.mutmut]
+source_paths = ["src/wildburrow"]
+also_copy = ["scripts"]
+# The trampolines add statements no coverage gate can account for, and a fixed seed keeps a verdict repeatable.
+pytest_add_cli_args = ["--no-cov", "--hypothesis-seed=0", "-p", "scripts.mutation_killers"]
+# Starting a flag at False or an optional at None leaves one mutant, the other falsy value, which nothing can tell apart.
+do_not_mutate_patterns = ['^\s*[\w.]+(: [^=]+)? = (False|None)$']

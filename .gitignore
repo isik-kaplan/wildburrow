@@ -10,3 +10,4 @@ htmlcov/
 .hypothesis/
 dist/
 /data/
+mutants/

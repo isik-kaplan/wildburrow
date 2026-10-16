@@ -29,4 +29,4 @@ class Registry:
     def resolve(self, labels: tuple[str, ...]) -> Tunnel | None:
         if (tunnel := self._tunnels.get(Name(labels))) is not None:
             return tunnel
-        return self._tunnels.get(Name(labels[1:], wildcard=True)) if len(labels) > 1 else None
+        return self._tunnels.get(Name(labels[1:], wildcard=True))

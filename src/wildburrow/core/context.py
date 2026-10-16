@@ -8,7 +8,7 @@ from wildburrow.auth.base import Authenticator
 from wildburrow.core.errors import BindRejected
 from wildburrow.core.names import Name, parse_name
 from wildburrow.core.registry import Registry
-from wildburrow.core.types import Tunnel
+from wildburrow.core.types import Destination, Tunnel
 
 if TYPE_CHECKING:
     from wildburrow.certs.manager import CertManager
@@ -28,7 +28,7 @@ class ServerContext:
     authenticator: Authenticator
     registry: Registry = field(default_factory=Registry)
     certs: CertManager | None = None
-    root: Tunnel | None = None
+    root: Destination | None = None
 
     async def bind(self, raw: str, tunnel: Tunnel, notify: Callable[[str], None]) -> Name:
         name = parse_name(raw, self.domain, self.max_depth)

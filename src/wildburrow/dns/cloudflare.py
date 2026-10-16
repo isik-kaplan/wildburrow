@@ -9,6 +9,8 @@ from wildburrow.dns.base import DNSError
 API = "https://api.cloudflare.com/client/v4"
 TXT_TTL = 60
 AUTOMATIC_TTL = 1
+AUTHORIZATION = "Authorization"
+TIMEOUT = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +25,7 @@ class CloudflareDNS:
         if not settings.api_token:
             raise ConfigError("api_token is empty")
         self._client = httpx.AsyncClient(
-            base_url=API, headers={"Authorization": f"Bearer {settings.api_token}"}, transport=transport, timeout=30
+            base_url=API, headers={AUTHORIZATION: f"Bearer {settings.api_token}"}, transport=transport, timeout=TIMEOUT
         )
         self._zones: dict[str, str] = {}
 

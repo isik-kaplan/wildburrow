@@ -1,11 +1,17 @@
 import asyncio
+import contextlib
+import json
 import ssl
+import struct
+from collections.abc import AsyncIterator
 
 import pytest
 from cryptography import x509
 
 from tests import acme_env
-from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Running, StartServer, get, http
+from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Running, StartServer, free_port, get, http
+from wildburrow.edge import proxy
+from wildburrow.streams import CHUNK, relay
 
 pytestmark = [pytest.mark.e2e, pytest.mark.acme]
 
@@ -21,13 +27,13 @@ def client_context(pebble: acme_env.Pebble) -> ssl.SSLContext:
 
 
 async def https(
-    running: Running, pebble: acme_env.Pebble, sni: str | None, host: str, path: str = "/"
+    running: Running, pebble: acme_env.Pebble, sni: str | None, host: str, path: str = "/", port: int | None = None
 ) -> tuple[bytes, x509.Certificate]:
     context = client_context(pebble)
     if sni is None:
         context.check_hostname = False
     reader, writer = await asyncio.open_connection(
-        "127.0.0.1", running.https_port, ssl=context, server_hostname=sni or ""
+        "127.0.0.1", port or running.https_port, ssl=context, server_hostname=sni or ""
     )
     der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
     writer.write(f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
@@ -172,19 +178,81 @@ async def test_disconnect_during_issuance_frees_the_name(
     assert running.server.ctx.registry.names() == []
 
 
+PROXY_HEADERS = {
+    "v1": b"PROXY TCP4 203.0.113.9 10.0.0.1 51000 443\r\n",
+    "v2": proxy.V2_SIGNATURE
+    + struct.pack(">BBH", proxy.V2_PROXY, proxy.V2_TCP4, proxy.V2_IPV4.size)
+    + proxy.V2_IPV4.pack(bytes([203, 0, 113, 9]), bytes([10, 0, 0, 1]), 51000, 443),
+}
+
+
+@contextlib.asynccontextmanager
+async def load_balancer(port: int, header: bytes) -> AsyncIterator[int]:
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        upstream = await asyncio.open_connection("127.0.0.1", port)
+        upstream[1].write(header + await reader.read(CHUNK))
+        await relay((reader, writer), upstream)
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        yield server.sockets[0].getsockname()[1]
+    finally:
+        server.close()
+        server.close_clients()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize("version", sorted(PROXY_HEADERS))
 async def test_proxy_protocol_before_the_tls_handshake(
-    start_server: StartServer, connect: Connect, backend: Backend, pebble: acme_env.Pebble, tls_env: dict[str, str]
+    start_server: StartServer,
+    connect: Connect,
+    backend: Backend,
+    pebble: acme_env.Pebble,
+    tls_env: dict[str, str],
+    version: str,
 ) -> None:
     running = await start_server(**tls_env, WILDBURROW_HTTPS_PROXY_PROTOCOL="true")
     client = await connect(running.ssh_port, "key", *forward("solo", backend.port))
     await client.line("ready:")
-    reader, writer = await asyncio.open_connection("127.0.0.1", running.https_port)
-    writer.write(b"PROXY TCP4 203.0.113.9 10.0.0.1 51000 443\r\n")
-    await writer.start_tls(client_context(pebble), server_hostname=f"solo.{DOMAIN}")
-    writer.write(f"GET /p HTTP/1.1\r\nHost: solo.{DOMAIN}\r\n\r\n".encode())
-    async with asyncio.timeout(TIMEOUT):
-        response = await reader.read()
-    writer.close()
+    async with load_balancer(running.https_port, PROXY_HEADERS[version]) as port:
+        response, _ = await https(running, pebble, f"solo.{DOMAIN}", f"solo.{DOMAIN}", port=port)
     assert response.startswith(b"HTTP/1.1 200 OK")
     with pytest.raises((ssl.SSLError, ConnectionResetError)):
         await https(running, pebble, f"solo.{DOMAIN}", f"solo.{DOMAIN}")
+
+
+async def test_tls_state_lives_in_the_data_dir(
+    start_server: StartServer, connect: Connect, backend: Backend, tls_env: dict[str, str]
+) -> None:
+    http_port, https_port = free_port(), free_port()
+    ports = {
+        "WILDBURROW_HTTP_HOST": "localhost",
+        "WILDBURROW_HTTP_PORT": str(http_port),
+        "WILDBURROW_ACME_EMAIL": "ops@x.test",
+    }
+    running = await start_server(**(tls_env | ports | {"WILDBURROW_HTTPS_PORT": str(https_port)}))
+    assert {sock.getsockname()[:2] for sock in running.server.edges[0]._server.sockets} == {
+        ("127.0.0.1", http_port),
+        ("::1", http_port),
+    }
+    assert [sock.getsockname()[:2] for sock in running.server.edges[1]._server.sockets] == [("127.0.0.1", https_port)]
+    client = await connect(running.ssh_port, "key", *forward("solo", backend.port))
+    await client.line("ready:")
+    data = running.server.settings.data_dir
+    assert sorted(path.name for path in data.iterdir()) == ["acme", "certs", "ssh_host_ed25519_key"]
+    assert sorted(path.name for path in (data / "certs").iterdir()) == [DOMAIN]
+    (account,) = (data / "acme").glob("*/account.json")
+    assert json.loads(account.read_text())["body"]["contact"] == ["mailto:ops@x.test"]
+
+
+async def test_the_redirect_edge_can_take_proxy_protocol_too(
+    start_server: StartServer, tls_env: dict[str, str]
+) -> None:
+    running = await start_server(
+        **tls_env, WILDBURROW_HTTP_PROXY_PROTOCOL="true", WILDBURROW_TRANSPORTS="ssh,websocket"
+    )
+    request = f"GET /x HTTP/1.1\r\nHost: {DOMAIN}\r\n\r\n".encode()
+    assert (await http(running.http_port, PROXY_HEADERS["v1"].replace(b"443", b"80") + request)).startswith(
+        b"HTTP/1.1 308 "
+    )
+    assert await http(running.http_port, request) == b""

@@ -41,7 +41,7 @@ class Server:
         )
         self.transports: list[Any] = [plugins.load("transport", name, env) for name in settings.transports]
         self.dns: Any = plugins.load("dns", settings.dns, env) if settings.dns else None
-        self.edges: list[Edge] = []
+        self.edges: list[Edge]
         self._tasks: list[asyncio.Task[None]] = []
 
     def _edge(self, port: int, proxied: bool, mode: Mode = Mode.PROXY, host: str = "", tls: Any = None) -> Edge:
