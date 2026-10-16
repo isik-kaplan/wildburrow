@@ -27,7 +27,12 @@ def config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def execs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli.os, "execvp", lambda file, args: calls.append([file, *args]))
+
+    def run(config: ClientConfig, port: int, names: list[str], local_host: str) -> int:
+        calls.append(ssh_command(config, port, names, local_host))
+        return 0
+
+    monkeypatch.setattr(cli.ssh, "run", run)
     return calls
 
 
@@ -79,16 +84,14 @@ def test_ssh_command() -> None:
 def test_port_and_names_default_to_connect(execs: list[list[str]]) -> None:
     assert cli.main(["login", "tunnel.example.com", "--user", "me"]) == 0
     cli.main(["3000", "*.foo"])
-    assert execs == [
-        ["ssh", *ssh_command(ClientConfig("tunnel.example.com", 2222, "me"), 3000, ["*.foo"], "localhost")]
-    ]
+    assert execs == [ssh_command(ClientConfig("tunnel.example.com", 2222, "me"), 3000, ["*.foo"], "localhost")]
 
 
 def test_flags_override_saved_config(execs: list[list[str]]) -> None:
     cli.main(["login", "saved.example.com", "--ssh-port", "1", "--user", "saved"])
     cli.main(["connect", "8000", "a", "--server", "other.example.com", "--ssh-port", "2", "--local-host", "127.0.0.1"])
     expected = ssh_command(ClientConfig("other.example.com", 2, "saved"), 8000, ["a"], "127.0.0.1")
-    assert execs == [["ssh", *expected]]
+    assert execs == [expected]
 
 
 def test_connect_without_saved_config(execs: list[list[str]], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,8 +189,28 @@ def test_serve_reports_configuration_errors(
 def test_login_saves_every_option() -> None:
     args = ["login", "s", "--ssh-port", "1", "--user", "u", "--transport", "websocket", "--auth", "token"]
     args += ["--identity", "~/k", "--token", "t", "--url", "https://x"]
+    args += ["--no-reconnect", "--retry-delay", "0.5", "--retry-max", "10"]
     assert cli.main(args) == 0
-    assert read_config(config_path()) == ClientConfig("s", 1, "u", "websocket", "token", "~/k", "t", "https://x")
+    assert read_config(config_path()) == ClientConfig(
+        "s", 1, "u", "websocket", "token", "~/k", "t", "https://x", reconnect=False, retry_delay=0.5, retry_max=10
+    )
+
+
+def test_reconnect_flags_override_saved_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    configs: list[ClientConfig] = []
+    monkeypatch.setattr(cli.ssh, "run", lambda config, *args: configs.append(config) or 0)
+    cli.main(["login", "s", "--no-reconnect", "--retry-max", "5"])
+    cli.main(["3000", "a"])
+    cli.main(["3000", "a", "--reconnect", "--retry-delay", "2"])
+    assert [(c.reconnect, c.retry_delay, c.retry_max) for c in configs] == [(False, 1.0, 5.0), (True, 2.0, 5.0)]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "soon", "nan", "inf"])
+def test_retry_seconds_must_be_positive(value: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["3000", "a", "--server", "s", "--retry-delay", value])
+    assert exit_info.value.code == 2
+    assert "--retry-delay: expected a" in capsys.readouterr().err
 
 
 def test_websocket_transport_runs_the_websocket_client(monkeypatch: pytest.MonkeyPatch) -> None:

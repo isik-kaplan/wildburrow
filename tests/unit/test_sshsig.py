@@ -123,7 +123,8 @@ async def test_key_auth_checks_signed_challenges(keys) -> None:
     auth = KeyAuth(KeySettings(line))
     peer = Peer("192.0.2.1", 1)
     good = SignedChallengeCredential("u", public, MESSAGE, sign(key))
-    assert await auth.authenticate(good, peer) == Identity("signer", "key")
+    fingerprint = asyncssh.import_public_key(line).get_fingerprint()
+    assert await auth.authenticate(good, peer) == Identity("signer", "key", fingerprint)
     replayed = SignedChallengeCredential("u", public, MESSAGE + b"other-nonce", sign(key))
     assert await auth.authenticate(replayed, peer) is None
     stranger = SignedChallengeCredential("u", other, MESSAGE, sign(key.parent / "other"))

@@ -21,6 +21,9 @@ class ClientConfig:
     identity: str = ""
     token: str = ""
     url: str = ""
+    reconnect: bool = True
+    retry_delay: float = 1.0
+    retry_max: float = 30.0
 
     @property
     def username(self) -> str:
@@ -44,5 +47,5 @@ def write_config(path: Path, config: ClientConfig) -> None:
     path.chmod(0o600)
 
 
-def _toml_value(value: str | int) -> str:
+def _toml_value(value: str | int | float | bool) -> str:
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")

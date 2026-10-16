@@ -9,7 +9,7 @@ RUN uv sync --locked --no-dev --extra server --no-editable --python /usr/local/b
     && apt-get purge -y libcap2-bin && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home-dir /data wildburrow \
     && mkdir -p /data && chown wildburrow /data
-ENV PATH=/app/.venv/bin:$PATH
+ENV PATH=/app/.venv/bin:$PATH WILDBURROW_DATA_DIR=/data
 USER wildburrow
 VOLUME /data
 EXPOSE 80 443 2222

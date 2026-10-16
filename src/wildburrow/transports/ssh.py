@@ -1,9 +1,11 @@
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import asyncssh
 
+from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.names import Name
@@ -63,8 +65,9 @@ class _Listener(asyncssh.SSHListener):
 
 
 class _Client(asyncssh.SSHServer):
-    def __init__(self, ctx: ServerContext) -> None:
+    def __init__(self, ctx: ServerContext, live: set[asyncssh.SSHServerConnection]) -> None:
         self._ctx = ctx
+        self._live = live
         self._identity: Identity | None = None
         self._closed = False
         self._pending: list[str] = []
@@ -73,11 +76,13 @@ class _Client(asyncssh.SSHServer):
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
+        self._live.add(conn)
         host, port = conn.get_extra_info("peername")[:2]
         self._peer = Peer(host, port)
 
     def connection_lost(self, exc: Exception | None) -> None:
         self._closed = True
+        self._live.discard(self._conn)
 
     def begin_auth(self, username: str) -> bool:
         return True
@@ -118,7 +123,7 @@ class _Client(asyncssh.SSHServer):
             self._ctx.registry.unbind(name, tunnel)
             return False
         log.info("%s bound %s from %s", self._identity.name, name, self._peer.host)
-        self.notify(f"ready: {self._ctx.url(name)}")
+        self.notify(f"{protocol.READY}{self._ctx.url(name)}")
         return _Listener(self._ctx.registry, name, tunnel, port)
 
     def notify(self, message: str) -> None:
@@ -158,6 +163,7 @@ class SSHTransport:
     def __init__(self, settings: SSHSettings) -> None:
         self.settings = settings
         self._server: asyncssh.SSHAcceptor | None = None
+        self._live: set[asyncssh.SSHServerConnection] = set()
 
     @property
     def port(self) -> int:
@@ -165,8 +171,13 @@ class SSHTransport:
         return self._server.sockets[0].getsockname()[1]
 
     async def start(self, ctx: ServerContext) -> None:
+        # asyncssh expands ~ for every connection, which fails for users without a home (systemd DynamicUser).
+        try:
+            Path.home()
+        except RuntimeError:
+            os.environ["HOME"] = str(ctx.data_dir)
         self._server = await asyncssh.create_server(
-            lambda: _Client(ctx),
+            lambda: _Client(ctx, self._live),
             self.settings.host,
             self.settings.port,
             server_host_keys=[load_host_key(ctx.data_dir / HOST_KEY_FILE)],
@@ -181,4 +192,7 @@ class SSHTransport:
     async def stop(self) -> None:
         if self._server is not None:
             self._server.close()
+            for conn in list(self._live):
+                conn.close()
+                await conn.wait_closed()
             await self._server.wait_closed()

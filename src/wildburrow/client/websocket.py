@@ -12,9 +12,11 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 
 from wildburrow import protocol
 from wildburrow.client.config import ClientConfig
+from wildburrow.client.retry import Backoff
 from wildburrow.streams import relay
 
 DEFAULT_IDENTITIES = ("id_ed25519", "id_ecdsa", "id_rsa")
+FATAL_CLOSE_CODES = {protocol.CLOSE_PROTOCOL_ERROR, protocol.CLOSE_AUTH_FAILED}
 
 
 class ClientError(Exception):
@@ -76,6 +78,7 @@ class Client:
         ask: Callable[[str], str] = getpass.getpass,
         out: Callable[[str], None] = print,
         connector: Callable[..., Any] = connect,
+        backoff: Backoff | None = None,
     ) -> None:
         self._config = config
         self._port = port
@@ -86,29 +89,41 @@ class Client:
         self._base = websocket_base(config)
         self._streams: set[asyncio.Task[None]] = set()
         self._connect = connector
+        self._backoff = backoff or Backoff(config.retry_delay, config.retry_max)
+        self._connected = False
 
     async def run(self) -> int:
         try:
             greeting = hello(self._config, self._ask)
-            async with self._connect(f"{self._base}{protocol.CONNECT_PATH}", proxy=None) as control:
-                return await self._session(control, greeting)
+            while True:
+                try:
+                    async with self._connect(f"{self._base}{protocol.CONNECT_PATH}", proxy=None) as control:
+                        if (code := await self._session(control, greeting)) is not None:
+                            return code
+                    reason = "the server closed the connection"
+                except ConnectionClosed as exc:
+                    if exc.rcvd is not None and exc.rcvd.code in FATAL_CLOSE_CODES:
+                        raise ClientError(exc.rcvd.reason or f"closed with code {exc.rcvd.code}") from None
+                    reason = exc.rcvd.reason if exc.rcvd is not None and exc.rcvd.reason else "connection closed"
+                except (OSError, InvalidHandshake, TimeoutError) as exc:
+                    reason = str(exc) or type(exc).__name__
+                state = "connection lost" if self._connected else f"could not connect to {self._base}"
+                if not self._config.reconnect:
+                    raise ClientError(f"{state}: {reason}")
+                delay = self._backoff.next()
+                self._out(f"{state}: {reason}; retrying in {delay:g}s")
+                await asyncio.sleep(delay)
         except ClientError as exc:
             self._out(f"error: {exc}")
             return 1
-        except ConnectionClosed as exc:
-            if exc.rcvd is None or not exc.rcvd.reason:
-                self._out(f"error: connection to {self._base} closed")
-            else:
-                self._out(f"error: {exc.rcvd.reason}")
-            return 1
-        except (OSError, InvalidHandshake, InvalidURI) as exc:
-            self._out(f"error: connection to {self._base} failed: {str(exc) or type(exc).__name__}")
+        except InvalidURI as exc:
+            self._out(f"error: {exc}")
             return 1
         finally:
             for task in self._streams:
                 task.cancel()
 
-    async def _session(self, control: ClientConnection, greeting: dict[str, str]) -> int:
+    async def _session(self, control: ClientConnection, greeting: dict[str, str]) -> int | None:
         await control.send(protocol.encode("hello", **greeting))
         first = protocol.decode(await control.recv())
         if first["type"] == "challenge":
@@ -117,17 +132,17 @@ class Client:
             await control.send(protocol.encode("signature", signature=signature))
             first = protocol.decode(await control.recv())
         self._out(f"connected as {first['identity']}")
+        self._connected = True
+        self._backoff.reset()
         for name in self._names:
             await control.send(protocol.encode("bind", name=name))
-        waiting = set(self._names)
         async for raw in control:
             message = protocol.decode(raw)
             match message["type"]:
                 case "status":
                     self._out(str(message["message"]))
                 case "bound":
-                    self._out(f"ready: {message['url']}")
-                    waiting.discard(str(message["name"]))
+                    self._out(f"{protocol.READY}{message['url']}")
                 case "rejected":
                     self._out(f"rejected: {message['reason']}")
                     return 1
@@ -135,7 +150,7 @@ class Client:
                     task = asyncio.create_task(self._stream(control, str(message["id"])))
                     self._streams.add(task)
                     task.add_done_callback(self._streams.discard)
-        return 0
+        return None
 
     async def _stream(self, control: ClientConnection, stream_id: str) -> None:
         try:

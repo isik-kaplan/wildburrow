@@ -39,5 +39,6 @@ class TokenAuth:
             raise ConfigError("hashes: no tokens found")
 
     async def authenticate(self, credential: TokenCredential, peer: Peer) -> Identity | None:
-        name = self._names.get(digest(credential.token))
-        return Identity(name, "token") if name is not None else None
+        hexdigest = digest(credential.token)
+        name = self._names.get(hexdigest)
+        return Identity(name, "token", hexdigest) if name is not None else None

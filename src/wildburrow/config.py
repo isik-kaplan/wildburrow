@@ -6,6 +6,7 @@ from typing import Any, get_type_hints
 PREFIX = "WILDBURROW_"
 TRUE = {"1", "true", "yes", "on"}
 FALSE = {"0", "false", "no", "off"}
+FILE_SUFFIX = "_FILE"
 
 
 class ConfigError(Exception):
@@ -29,14 +30,26 @@ def _convert(var: str, raw: str, kind: Any) -> Any:
     return kind(raw)
 
 
+def _read(var: str, env: Mapping[str, str]) -> str | None:
+    path = env.get(var + FILE_SUFFIX)
+    if path is None:
+        return env.get(var)
+    if var in env:
+        raise ConfigError(f"set {var} or {var}{FILE_SUFFIX}, not both")
+    try:
+        return Path(path).read_text().strip()
+    except OSError as exc:
+        raise ConfigError(f"{var}{FILE_SUFFIX}: {exc}") from None
+
+
 def load[T](cls: type[T], env: Mapping[str, str], prefix: str) -> T:
     hints = get_type_hints(cls)
     values: dict[str, Any] = {}
     missing = []
     for field in dataclasses.fields(cls):  # type: ignore[arg-type]
         var = f"{prefix}{field.name.upper()}"
-        if var in env:
-            values[field.name] = _convert(var, env[var], hints[field.name])
+        if (raw := _read(var, env)) is not None:
+            values[field.name] = _convert(var, raw, hints[field.name])
         elif field.default is dataclasses.MISSING:
             missing.append(var)
     if missing:
@@ -49,7 +62,7 @@ class ServerSettings:
     domain: str
     transports: tuple[str, ...] = ("ssh",)
     auth: tuple[str, ...] = ("key",)
-    data_dir: Path = Path("/data")
+    data_dir: Path = Path("~/.local/state/wildburrow")
     http_host: str = "0.0.0.0"  # noqa: S104
     http_port: int = 80
     max_depth: int = 5
@@ -75,3 +88,9 @@ class ServerSettings:
         "192.168.0.0/16",
         "fc00::/7",
     )
+
+    def __post_init__(self) -> None:
+        try:
+            object.__setattr__(self, "data_dir", self.data_dir.expanduser())
+        except RuntimeError:
+            raise ConfigError(f"{PREFIX}DATA_DIR is required when there is no home directory") from None

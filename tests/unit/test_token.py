@@ -16,7 +16,7 @@ def test_new_tokens_are_unique_and_prefixed() -> None:
 async def test_tokens_match_by_hash() -> None:
     token = new_token()
     auth = TokenAuth(TokenSettings(f"# ci\n\nname:with:colons:{digest(token)}\n"))
-    assert await auth.authenticate(TokenCredential(token), PEER) == Identity("name:with:colons", "token")
+    assert await auth.authenticate(TokenCredential(token), PEER) == Identity("name:with:colons", "token", digest(token))
     assert await auth.authenticate(TokenCredential(token + "x"), PEER) is None
     assert await auth.authenticate(TokenCredential(digest(token)), PEER) is None
 

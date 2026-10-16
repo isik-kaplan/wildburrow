@@ -12,8 +12,10 @@ class Registry:
     def __init__(self) -> None:
         self._tunnels: dict[Name, Tunnel] = {}
 
+    # The same identity may move a name to a new connection, so a reconnecting client doesn't wait for the
+    # server to notice that its old connection is gone.
     def bind(self, name: Name, tunnel: Tunnel) -> None:
-        if (holder := self._tunnels.get(name)) is not None:
+        if (holder := self._tunnels.get(name)) is not None and holder.identity != tunnel.identity:
             raise NameTaken(name, holder)
         self._tunnels[name] = tunnel
 

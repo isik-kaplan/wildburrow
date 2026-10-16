@@ -1,6 +1,5 @@
 import json
 import re
-from pathlib import Path
 
 import httpx
 import pytest
@@ -99,19 +98,6 @@ async def test_missing_zone() -> None:
         await provider(FakeCloudflare({})).create_txt("x.example.org", "v")
 
 
-def test_token_from_file(tmp_path: Path) -> None:
-    path = tmp_path / "token"
-    path.write_text(f"{TOKEN}\n")
-    assert isinstance(provider(FakeCloudflare({}), api_token="", api_token_file=str(path)), CloudflareDNS)
-
-
-@pytest.mark.parametrize(
-    ("settings", "message"),
-    [
-        ({"api_token": ""}, "api_token or api_token_file is required"),
-        ({"api_token": "", "api_token_file": "/nonexistent/token"}, "api_token_file:"),
-    ],
-)
-def test_token_errors(settings: dict[str, str], message: str) -> None:
-    with pytest.raises(ConfigError, match=message):
-        provider(FakeCloudflare({}), **settings)
+def test_token_is_required() -> None:
+    with pytest.raises(ConfigError, match="api_token is empty"):
+        provider(FakeCloudflare({}), api_token="")

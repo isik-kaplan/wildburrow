@@ -9,6 +9,10 @@ CONNECT_PATH = "/_wildburrow/connect"
 DATA_PATH = "/_wildburrow/data/"
 SIGNATURE_NAMESPACE = "wildburrow"
 EOF_MARKER = "eof"
+READY = "ready: "
+CLOSE_PROTOCOL_ERROR = 4400
+CLOSE_AUTH_FAILED = 4401
+CLOSE_UNKNOWN_STREAM = 4404
 
 
 def challenge_message(domain: str, nonce: str) -> bytes:

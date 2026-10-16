@@ -12,6 +12,7 @@ class Peer:
 class Identity:
     name: str
     method: str
+    subject: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -55,6 +55,18 @@ async def test_serve_until_terminated(tmp_path: Path) -> None:
     assert (tmp_path / "data").stat().st_mode & 0o777 == 0o700
 
 
+async def test_users_without_a_home_get_the_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_home(cls: type[Path]) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    values = env(tmp_path)
+    settings = config.load(config.ServerSettings, values, config.PREFIX)
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    async with Server(settings, values):
+        assert os.environ["HOME"] == str(tmp_path / "data")
+
+
 async def test_transport_stop_before_start() -> None:
     await SSHTransport(SSHSettings()).stop()
     await WebSocketTransport(WebSocketSettings()).stop()

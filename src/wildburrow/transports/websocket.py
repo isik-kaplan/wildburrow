@@ -25,10 +25,6 @@ from wildburrow.core.types import (
 
 log = logging.getLogger(__name__)
 
-CLOSE_PROTOCOL_ERROR = 4400
-CLOSE_AUTH_FAILED = 4401
-CLOSE_UNKNOWN_STREAM = 4404
-
 
 @dataclass(frozen=True, slots=True)
 class WebSocketSettings:
@@ -45,7 +41,7 @@ class ProtocolError(Exception):
 
 class _Root:
     def __init__(self, host: str, port: int, peers: dict[int, Peer]) -> None:
-        self.identity = Identity("wildburrow", "internal")
+        self.identity = Identity("wildburrow", "internal", "wildburrow")
         self._host = host
         self._port = port
         self._peers = peers
@@ -140,7 +136,7 @@ class WebSocketTransport:
             return
         waiter = self.pending.get(path.removeprefix(protocol.DATA_PATH))
         if waiter is None or waiter.done():
-            await connection.close(CLOSE_UNKNOWN_STREAM, "unknown stream")
+            await connection.close(protocol.CLOSE_UNKNOWN_STREAM, "unknown stream")
             return
         waiter.set_result(connection)
         await connection.wait_closed()
@@ -152,11 +148,11 @@ class WebSocketTransport:
         except ConnectionClosed:
             return
         except (ProtocolError, ValueError, KeyError, TimeoutError) as exc:
-            await connection.close(CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
+            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
             return
         if identity is None:
             log.info("websocket login failed from %s", peer.host)
-            await connection.close(CLOSE_AUTH_FAILED, "authentication failed")
+            await connection.close(protocol.CLOSE_AUTH_FAILED, "authentication failed")
             return
         outbox = _Outbox(connection)
         outbox.put("welcome", identity=identity.name)
@@ -175,7 +171,7 @@ class WebSocketTransport:
             pass
         except (ValueError, KeyError) as exc:
             await outbox.flush_and_stop()
-            await connection.close(CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
+            await connection.close(protocol.CLOSE_PROTOCOL_ERROR, str(exc)[:100] or type(exc).__name__)
         finally:
             for name in bound:
                 self._ctx.registry.unbind(name, tunnel)

@@ -38,6 +38,12 @@ wildburrow login tunnel.example.com --transport websocket --auth token --token w
 WILDBURROW_TOKEN=wb_... wildburrow 3000 app     # token from the environment
 ```
 
+The client keeps the tunnel up: when the connection drops, it reconnects and binds its names again, waiting
+`--retry-delay` seconds (default 1) and doubling up to `--retry-max` (default 30). Over websocket it also waits for a
+server that isn't reachable yet. A refused login or a rejected name ends the client instead, and `--no-reconnect` makes
+any disconnect end it. `login` saves these flags like the others and `connect` overrides them. Binding a name you
+already hold moves it to the new connection; other identities are refused.
+
 Plain `ssh` works without the client:
 
 ```sh
@@ -45,6 +51,8 @@ ssh -T -p 2222 -R '*.foo:80:localhost:3000' tunnel.example.com
 ```
 
 ## Server
+
+### Docker
 
 ```sh
 docker build -t wildburrow .
@@ -63,16 +71,69 @@ Without `WILDBURROW_DNS`, the server serves plain HTTP on `WILDBURROW_HTTP_PORT`
 port 80 redirects bound names to HTTPS and port 443 terminates TLS, picking the certificate by SNI. A request whose
 `Host` isn't covered by the certificate of its connection gets `421`.
 
-`examples/docker-compose.traefik.yml` runs it behind Traefik with TLS passthrough and PROXY protocol.
+`examples/docker-compose.traefik.yml` runs it behind Traefik with TLS passthrough and PROXY protocol, for hosts where
+another proxy already owns ports 80 and 443.
+
+### Without Docker
+
+Install it as a tool and run `wildburrow serve`. It needs to bind ports below 1024, so give it
+`CAP_NET_BIND_SERVICE` rather than running it as root. A systemd service does that for a dynamic user:
+
+```sh
+# as root
+UV_TOOL_DIR=/opt/wildburrow UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/wildburrow/python \
+  uv tool install 'wildburrow[server] @ git+https://github.com/isik-kaplan/wildburrow'
+mkdir -p /etc/wildburrow && cp ~/.ssh/id_ed25519.pub /etc/wildburrow/authorized_keys
+cat > /etc/wildburrow/env <<'EOF'
+WILDBURROW_DOMAIN=tunnel.example.com
+WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS_FILE=/etc/wildburrow/authorized_keys
+EOF
+chmod 600 /etc/wildburrow/env
+```
+
+`/etc/systemd/system/wildburrow.service`:
+
+```ini
+[Unit]
+Description=wildburrow tunnel server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/wildburrow serve
+EnvironmentFile=/etc/wildburrow/env
+Environment=WILDBURROW_DATA_DIR=%S/wildburrow
+DynamicUser=yes
+StateDirectory=wildburrow
+StateDirectoryMode=0700
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+systemctl daemon-reload && systemctl enable --now wildburrow
+journalctl -u wildburrow -f
+```
 
 ### Settings
+
+Every setting can also be read from a file by adding `_FILE` to its name, for secrets and multi-line values:
+`WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS_FILE=/etc/wildburrow/authorized_keys`.
 
 | Variable | Default | |
 |---|---|---|
 | `WILDBURROW_DOMAIN` | required | Base domain tunnels live under |
 | `WILDBURROW_TRANSPORTS` | `ssh` | Transport plugins: `ssh`, `websocket` |
 | `WILDBURROW_AUTH` | `key` | Auth plugins, tried in order: `key`, `password`, `token` |
-| `WILDBURROW_DATA_DIR` | `/data` | SSH host key, certificates, ACME account |
+| `WILDBURROW_DATA_DIR` | `~/.local/state/wildburrow` | Host key, certificates, ACME account; `/data` in the image |
 | `WILDBURROW_HTTP_HOST` / `_HTTP_PORT` | `0.0.0.0` / `80` | Plain HTTP listener |
 | `WILDBURROW_HTTPS_HOST` / `_HTTPS_PORT` | `0.0.0.0` / `443` | TLS listener, when `WILDBURROW_DNS` is set |
 | `WILDBURROW_HTTP_PROXY_PROTOCOL` / `_HTTPS_PROXY_PROTOCOL` | `false` | Require a PROXY v1/v2 header |
@@ -93,7 +154,7 @@ port 80 redirects bound names to HTTPS and port 443 terminates TLS, picking the 
 | `WILDBURROW_AUTH_PASSWORD_MAX_FAILURES` | `5` | Failed passwords per address before blocking |
 | `WILDBURROW_AUTH_PASSWORD_BLOCK_SECONDS` | `900` | How long failures count against an address |
 | `WILDBURROW_AUTH_TOKEN_HASHES` | | `name:sha256` lines from `wildburrow token NAME` |
-| `WILDBURROW_DNS_CLOUDFLARE_API_TOKEN` | | Token with DNS Edit and Zone Read (or `_API_TOKEN_FILE`) |
+| `WILDBURROW_DNS_CLOUDFLARE_API_TOKEN` | | Token with DNS Edit and Zone Read |
 
 ## Plugins
 

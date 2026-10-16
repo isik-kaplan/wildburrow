@@ -47,7 +47,7 @@ class PasswordAuth:
         failures.append(attempt)
         if await asyncio.to_thread(self._verify, credential.password):
             failures.remove(attempt)
-            return Identity(credential.username, "password")
+            return Identity(credential.username, "password", credential.username)
         return None
 
     def _verify(self, password: str) -> bool:

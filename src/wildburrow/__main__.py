@@ -3,15 +3,15 @@ import asyncio
 import dataclasses
 import getpass
 import logging
+import math
 import os
 import sys
 from collections.abc import Sequence
 from importlib.metadata import version
 
 from wildburrow.auth.token import digest, new_token
-from wildburrow.client import websocket
+from wildburrow.client import ssh, websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
-from wildburrow.client.ssh import ssh_command
 from wildburrow.config import PREFIX
 
 COMMANDS = {"connect", "login", "serve", "hash-password", "token"}
@@ -19,6 +19,19 @@ SERVER_EXTRA = "the server needs extra dependencies: install 'wildburrow[server]
 TOKEN_ENV = f"{PREFIX}TOKEN"
 TRANSPORTS = ["ssh", "websocket"]
 AUTH_METHODS = ["key", "password", "token"]
+CLIENT_OPTIONS = (
+    "ssh_port", "user", "transport", "auth", "identity", "url", "reconnect", "retry_delay", "retry_max",
+)  # fmt: skip
+
+
+def _seconds(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number of seconds, got {raw!r}") from None
+    if not 0 < value < math.inf:
+        raise argparse.ArgumentTypeError(f"expected a positive number of seconds, got {raw!r}")
+    return value
 
 
 def _client_options(parser: argparse.ArgumentParser, defaults: bool) -> None:
@@ -29,6 +42,26 @@ def _client_options(parser: argparse.ArgumentParser, defaults: bool) -> None:
     parser.add_argument("--auth", choices=AUTH_METHODS, default=default.auth if defaults else None)
     parser.add_argument("--identity", default=default.identity if defaults else None, help="SSH key for websocket")
     parser.add_argument("--url", default=default.url if defaults else None, help="websocket base URL override")
+    parser.add_argument(
+        "--reconnect",
+        action=argparse.BooleanOptionalAction,
+        default=default.reconnect if defaults else None,
+        help=f"reconnect when the connection drops (default: {'on' if default.reconnect else 'off'})",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=_seconds,
+        metavar="SECONDS",
+        default=default.retry_delay if defaults else None,
+        help=f"first wait before reconnecting, doubled after each failure (default: {default.retry_delay:g})",
+    )
+    parser.add_argument(
+        "--retry-max",
+        type=_seconds,
+        metavar="SECONDS",
+        default=default.retry_max if defaults else None,
+        help=f"longest wait between reconnects (default: {default.retry_max:g})",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -61,25 +94,18 @@ def _connect(args: argparse.Namespace) -> int:
     if not server:
         print("no server configured: run `wildburrow login <server>` or pass --server", file=sys.stderr)
         return 2
-    overrides = {
-        field: getattr(args, field)
-        for field in ("ssh_port", "user", "transport", "auth", "identity", "url")
-        if getattr(args, field) is not None
-    }
+    overrides = {field: getattr(args, field) for field in CLIENT_OPTIONS if getattr(args, field) is not None}
     if token := os.environ.get(TOKEN_ENV):
         overrides["token"] = token
     config = dataclasses.replace(saved or ClientConfig(server), server=server, **overrides)
     if config.transport == "websocket":
         return websocket.run(config, args.port, args.names, args.local_host)
-    command = ssh_command(config, args.port, args.names, args.local_host)
-    os.execvp(command[0], command)  # noqa: S606
+    return ssh.run(config, args.port, args.names, args.local_host)
 
 
 def _login(args: argparse.Namespace) -> int:
     path = config_path()
-    config = ClientConfig(
-        args.server, args.ssh_port, args.user, args.transport, args.auth, args.identity, args.token, args.url
-    )
+    config = ClientConfig(args.server, token=args.token, **{field: getattr(args, field) for field in CLIENT_OPTIONS})
     write_config(path, config)
     print(f"saved {path}")
     return 0

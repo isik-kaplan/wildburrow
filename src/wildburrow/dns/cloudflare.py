@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,24 +13,17 @@ AUTOMATIC_TTL = 1
 
 @dataclass(frozen=True, slots=True)
 class CloudflareSettings:
-    api_token: str = ""
-    api_token_file: str = ""
+    api_token: str
 
 
 class CloudflareDNS:
     Settings = CloudflareSettings
 
     def __init__(self, settings: CloudflareSettings, transport: httpx.AsyncBaseTransport | None = None) -> None:
-        token = settings.api_token
-        if settings.api_token_file:
-            try:
-                token = Path(settings.api_token_file).read_text().strip()
-            except OSError as exc:
-                raise ConfigError(f"api_token_file: {exc}") from None
-        if not token:
-            raise ConfigError("api_token or api_token_file is required")
+        if not settings.api_token:
+            raise ConfigError("api_token is empty")
         self._client = httpx.AsyncClient(
-            base_url=API, headers={"Authorization": f"Bearer {token}"}, transport=transport, timeout=30
+            base_url=API, headers={"Authorization": f"Bearer {settings.api_token}"}, transport=transport, timeout=30
         )
         self._zones: dict[str, str] = {}
 

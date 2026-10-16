@@ -51,7 +51,7 @@ class Lines:
                 await self.changed.wait()
 
 
-def client_config(running: Running, credentials: Credentials, method: str, **overrides: str) -> ClientConfig:
+def client_config(credentials: Credentials, method: str, **overrides: str) -> ClientConfig:
     values = {
         "server": DOMAIN,
         "user": "tester",
@@ -89,7 +89,7 @@ async def test_auth_matrix(
     start_server: StartServer, credentials: Credentials, backend: Backend, ws_env, server_auth: str, method: str
 ) -> None:
     running = await start_server(**{**ws_env, "WILDBURROW_AUTH": server_auth})
-    task, out = start_client(running, client_config(running, credentials, method), backend.port, ["app"])
+    task, out = start_client(running, client_config(credentials, method), backend.port, ["app"])
     if method in server_auth.split(","):
         assert await out.wait_for("ready:") == f"ready: http://app.{DOMAIN}"
         assert await get(running.http_port, f"app.{DOMAIN}", "/w") == (200, b"GET /w HTTP/1.1")
@@ -105,9 +105,7 @@ async def test_wrong_credentials(
 ) -> None:
     running = await start_server(**ws_env)
     overrides = {"identity": str(credentials.other_key), "token": new_token()}
-    task, out = start_client(
-        running, client_config(running, credentials, method, **overrides), 9, ["app"], password="wrong"
-    )
+    task, out = start_client(running, client_config(credentials, method, **overrides), 9, ["app"], password="wrong")
     assert await asyncio.wait_for(task, TIMEOUT) == 1
     assert await out.wait_for("error:") == "error: authentication failed"
 
@@ -120,24 +118,35 @@ async def test_both_transports_share_names(
     if transport == "ssh":
         first = await connect(running.ssh_port, "key", "-R", f"*.foo:80:127.0.0.1:{backend.port}")
         await first.line("ready:")
-        task, out = start_client(running, client_config(running, credentials, "key"), backend.port, ["*.foo"])
+        task, out = start_client(running, client_config(credentials, "token"), backend.port, ["*.foo"])
         assert (await out.wait_for("rejected:")).endswith("*.foo is already bound by laptop")
         assert await asyncio.wait_for(task, TIMEOUT) == 1
     else:
-        task, out = start_client(
-            running, client_config(running, credentials, "key"), backend.port, ["*.foo", "*.bar.foo"]
-        )
+        task, out = start_client(running, client_config(credentials, "token"), backend.port, ["*.foo", "*.bar.foo"])
         await out.wait_for("ready: http://*.bar.foo")
         second = await connect(running.ssh_port, "key", "-R", f"*.foo:80:127.0.0.1:{backend.port}")
-        assert await second.wait() != 0
+        assert await second.line("rejected:") == "rejected: *.foo is already bound by ci"
+        assert await second.wait() == 1
         await stop(task)
+
+
+async def test_the_same_key_moves_a_name_across_transports(
+    start_server: StartServer, connect: Connect, credentials: Credentials, backend: Backend, ws_env
+) -> None:
+    running = await start_server(**ws_env)
+    first = await connect(running.ssh_port, "key", "-R", "*.foo:80:127.0.0.1:9")
+    await first.line("ready:")
+    task, out = start_client(running, client_config(credentials, "key"), backend.port, ["*.foo"])
+    await out.wait_for("ready:")
+    assert (await get(running.http_port, f"a.foo.{DOMAIN}"))[0] == 200
+    await stop(task)
 
 
 async def test_routing_streams_and_disconnect(
     start_server: StartServer, credentials: Credentials, backend: Backend, ws_env
 ) -> None:
     running = await start_server(**ws_env)
-    task, out = start_client(running, client_config(running, credentials, "token"), backend.port, ["*.foo", "solo"])
+    task, out = start_client(running, client_config(credentials, "token"), backend.port, ["*.foo", "solo"])
     await out.wait_for("ready: http://solo")
     assert await out.wait_for("connected as") == "connected as ci"
     results = await asyncio.gather(*(get(running.http_port, f"h{i}.foo.{DOMAIN}", f"/{i}") for i in range(20)))
@@ -156,7 +165,7 @@ async def test_unreachable_local_port_is_bad_gateway(
     start_server: StartServer, credentials: Credentials, ws_env
 ) -> None:
     running = await start_server(**ws_env)
-    task, out = start_client(running, client_config(running, credentials, "key"), 9, ["app"])
+    task, out = start_client(running, client_config(credentials, "key"), 9, ["app"])
     await out.wait_for("ready:")
     assert (await get(running.http_port, f"app.{DOMAIN}"))[0] == 502
     await stop(task)
@@ -164,7 +173,7 @@ async def test_unreachable_local_port_is_bad_gateway(
 
 async def test_invalid_names_are_rejected(start_server: StartServer, credentials: Credentials, ws_env) -> None:
     running = await start_server(**ws_env)
-    task, out = start_client(running, client_config(running, credentials, "key"), 9, ["*.*.foo"])
+    task, out = start_client(running, client_config(credentials, "key"), 9, ["*.*.foo"])
     assert "only allowed as the leftmost" in await out.wait_for("rejected:")
     assert await asyncio.wait_for(task, TIMEOUT) == 1
 
@@ -261,7 +270,7 @@ async def test_password_blocking_uses_the_real_client_address(
     start_server: StartServer, credentials: Credentials, ws_env
 ) -> None:
     running = await start_server(**ws_env, WILDBURROW_AUTH_PASSWORD_MAX_FAILURES="1")
-    task, _ = start_client(running, client_config(running, credentials, "password"), 9, ["app"], password="wrong")
+    task, _ = start_client(running, client_config(credentials, "password"), 9, ["app"], password="wrong")
     assert await asyncio.wait_for(task, TIMEOUT) == 1
     password_auth = running.server.ctx.authenticator._providers[1]
     assert password_auth.blocked("127.0.0.1")
@@ -281,7 +290,7 @@ async def test_websocket_over_tls(
     running = await start_server(**tls_env, **ws_env)
     context = ssl.create_default_context(cadata=await asyncio.to_thread(pebble.root))
     connector = functools.partial(connect, host="127.0.0.1", port=running.https_port, ssl=context)
-    config = client_config(running, credentials, "key", url=f"https://{DOMAIN}")
+    config = client_config(credentials, "key", url=f"https://{DOMAIN}")
     async with asyncio.timeout(TIMEOUT):
         while not running.server.ctx.certs.ready(DOMAIN):
             await asyncio.sleep(0.1)

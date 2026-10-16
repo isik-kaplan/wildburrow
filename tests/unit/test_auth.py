@@ -27,9 +27,11 @@ def openssh_line(key: asyncssh.SSHKey) -> str:
 async def test_key_auth_matches_listed_keys() -> None:
     listed, unnamed, stranger = public_key(), public_key(None), public_key("stranger")
     auth = KeyAuth(KeySettings(f"# laptop\n\n  {openssh_line(listed)}  \n{openssh_line(unnamed)}\n"))
-    assert await auth.authenticate(PublicKeyCredential("u", listed.public_data), PEER) == Identity("laptop", "key")
+    assert await auth.authenticate(PublicKeyCredential("u", listed.public_data), PEER) == Identity(
+        "laptop", "key", listed.get_fingerprint()
+    )
     assert await auth.authenticate(PublicKeyCredential("u", unnamed.public_data), PEER) == Identity(
-        unnamed.get_fingerprint(), "key"
+        unnamed.get_fingerprint(), "key", unnamed.get_fingerprint()
     )
     assert await auth.authenticate(PublicKeyCredential("u", stranger.public_data), PEER) is None
 
@@ -71,7 +73,8 @@ def test_password_config_errors(settings: PasswordSettings, message: str) -> Non
 
 async def test_password_accepts_the_right_password() -> None:
     auth = PasswordAuth(PasswordSettings(HASH))
-    assert await auth.authenticate(PasswordCredential("alice", "secret"), PEER) == Identity("alice", "password")
+    alice = Identity("alice", "password", "alice")
+    assert await auth.authenticate(PasswordCredential("alice", "secret"), PEER) == alice
     assert await auth.authenticate(PasswordCredential("alice", "Secret"), PEER) is None
 
 
@@ -115,16 +118,16 @@ class Fixed:
 
 async def test_authenticator_tries_matching_providers_in_order() -> None:
     first = Fixed((PasswordCredential,), None)
-    keys = Fixed((PublicKeyCredential,), Identity("k", "key"))
-    second = Fixed((PasswordCredential,), Identity("p", "password"))
+    keys = Fixed((PublicKeyCredential,), Identity("k", "key", "k"))
+    second = Fixed((PasswordCredential,), Identity("p", "password", "p"))
     authenticator = Authenticator([first, keys, second])
     assert authenticator.accepts(PasswordCredential)
-    assert await authenticator.authenticate(PasswordCredential("u", "x"), PEER) == Identity("p", "password")
+    assert await authenticator.authenticate(PasswordCredential("u", "x"), PEER) == Identity("p", "password", "p")
     assert (first.calls, keys.calls, second.calls) == (1, 0, 1)
 
 
 async def test_authenticator_without_a_matching_provider() -> None:
-    authenticator = Authenticator([Fixed((PasswordCredential,), Identity("p", "password"))])
+    authenticator = Authenticator([Fixed((PasswordCredential,), Identity("p", "password", "p"))])
     assert not authenticator.accepts(PublicKeyCredential)
     assert await authenticator.authenticate(PublicKeyCredential("u", b"k"), PEER) is None
 

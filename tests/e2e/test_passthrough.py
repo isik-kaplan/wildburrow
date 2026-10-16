@@ -70,7 +70,7 @@ async def tunnel(
         assert await client.line("ready:") == f"ready: {scheme}://{HOST}"
         yield
         return
-    config = client_config(running, credentials, method, url=f"{scheme}://{DOMAIN}")
+    config = client_config(credentials, method, url=f"{scheme}://{DOMAIN}")
     task, out = start_client(running, config, port, [NAME], **({"connector": connector} if connector else {}))
     assert await out.wait_for("ready:") == f"ready: {scheme}://{HOST}"
     yield

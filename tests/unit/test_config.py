@@ -50,3 +50,43 @@ def test_tuple_round_trip(items: list[str]) -> None:
 def test_server_settings_need_a_domain() -> None:
     with pytest.raises(config.ConfigError, match=f"{config.PREFIX}DOMAIN"):
         config.load(config.ServerSettings, {}, config.PREFIX)
+
+
+def test_settings_can_be_read_from_files(tmp_path: Path) -> None:
+    (tmp_path / "required").write_text("line one\nline two\n")
+    (tmp_path / "count").write_text("7\n")
+    env = {"X_REQUIRED_FILE": str(tmp_path / "required"), "X_COUNT_FILE": str(tmp_path / "count")}
+    assert config.load(Example, env, "X_") == Example("line one\nline two", count=7)
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"X_REQUIRED": "r", "X_REQUIRED_FILE": "/x"}, "set X_REQUIRED or X_REQUIRED_FILE, not both"),
+        ({"X_REQUIRED_FILE": "/nonexistent/value"}, "X_REQUIRED_FILE: .*No such file"),
+    ],
+)
+def test_file_errors(env: dict[str, str], message: str) -> None:
+    with pytest.raises(config.ConfigError, match=message):
+        config.load(Example, env, "X_")
+
+
+def test_data_dir_expands_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = config.load(config.ServerSettings, {"WILDBURROW_DOMAIN": "d"}, config.PREFIX)
+    assert settings.data_dir == tmp_path / ".local" / "state" / "wildburrow"
+    settings = config.load(
+        config.ServerSettings, {"WILDBURROW_DOMAIN": "d", "WILDBURROW_DATA_DIR": "~/x"}, config.PREFIX
+    )
+    assert settings.data_dir == tmp_path / "x"
+
+
+def test_data_dir_is_required_without_a_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(Path, "expanduser", raise_no_home)
+    with pytest.raises(config.ConfigError, match="WILDBURROW_DATA_DIR is required"):
+        config.load(config.ServerSettings, {"WILDBURROW_DOMAIN": "d"}, config.PREFIX)
+
+
+def raise_no_home(self: Path) -> Path:
+    raise RuntimeError("Could not determine home directory.")

@@ -23,7 +23,7 @@ class FakeTunnel:
 
 
 def tunnel(name: str = "laptop") -> FakeTunnel:
-    return FakeTunnel(Identity(name, "key"))
+    return FakeTunnel(Identity(name, "key", name))
 
 
 def test_exact_and_wildcard_resolution() -> None:
@@ -47,6 +47,19 @@ def test_taken_name_names_the_holder() -> None:
     with pytest.raises(NameTaken, match=r"^\*\.foo is already bound by alice$"):
         registry.bind(Name(("foo",), wildcard=True), tunnel("bob"))
     assert registry.resolve(("x", "foo")) is holder
+
+
+def test_the_same_identity_moves_a_name() -> None:
+    registry = Registry()
+    old, new = tunnel(), tunnel()
+    name = Name(("app",))
+    registry.bind(name, old)
+    registry.bind(name, new)
+    assert registry.resolve(("app",)) is new
+    registry.unbind(name, old)
+    assert registry.resolve(("app",)) is new
+    with pytest.raises(NameTaken):
+        registry.bind(name, FakeTunnel(Identity("laptop", "key", "another key with the same comment")))
 
 
 def test_only_the_holder_can_unbind() -> None:

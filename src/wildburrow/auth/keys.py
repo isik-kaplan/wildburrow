@@ -19,7 +19,7 @@ class KeyAuth:
     handles: ClassVar[tuple[type, ...]] = (PublicKeyCredential, SignedChallengeCredential)
 
     def __init__(self, settings: KeySettings) -> None:
-        self._keys: dict[bytes, str] = {}
+        self._keys: dict[bytes, tuple[str, str]] = {}
         for line in settings.authorized_keys.splitlines():
             if not (line := line.strip()) or line.startswith("#"):
                 continue
@@ -27,15 +27,16 @@ class KeyAuth:
                 key = asyncssh.import_public_key(line)
             except (asyncssh.KeyImportError, ValueError) as exc:
                 raise ConfigError(f"authorized_keys: cannot parse {line[:40]!r}: {exc}") from None
-            self._keys[key.public_data] = key.get_comment() or key.get_fingerprint()
+            fingerprint = key.get_fingerprint()
+            self._keys[key.public_data] = (key.get_comment() or fingerprint, fingerprint)
         if not self._keys:
             raise ConfigError("authorized_keys: no keys found")
 
     async def authenticate(
         self, credential: PublicKeyCredential | SignedChallengeCredential, peer: Peer
     ) -> Identity | None:
-        name = self._keys.get(credential.public_key)
-        if name is None:
+        known = self._keys.get(credential.public_key)
+        if known is None:
             return None
         if isinstance(credential, SignedChallengeCredential):
             try:
@@ -44,4 +45,5 @@ class KeyAuth:
                 )
             except sshsig.InvalidSignature:
                 return None
-        return Identity(name, "key")
+        name, fingerprint = known
+        return Identity(name, "key", fingerprint)

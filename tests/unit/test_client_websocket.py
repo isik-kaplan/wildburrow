@@ -2,13 +2,16 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from websockets.exceptions import ConnectionClosedOK
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
 
 from wildburrow import protocol
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig
+from wildburrow.client.retry import Backoff
 from wildburrow.client.websocket import Client, ClientError, hello, identity_file, sign, websocket_base
+
+NO_WAIT = Backoff(0, 0)
 
 
 @pytest.mark.parametrize(
@@ -87,10 +90,26 @@ class FakeControl:
         return self.incoming.pop(0)
 
 
-def fake_connector(control: FakeControl, data_error: Exception | None = None):
+AUTH_FAILED = Close(4401, "authentication failed")
+
+
+class Refused(FakeControl):
+    def __init__(self, close: Close | None = AUTH_FAILED) -> None:
+        super().__init__([])
+        self.close = close
+
+    async def recv(self) -> str:
+        raise ConnectionClosedError(self.close, None)
+
+
+def fake_connector(*controls: FakeControl | Exception, data_error: Exception | None = None):
+    queue = [*controls, Refused()]
+
     def connector(url: str, **kwargs):
         if url.endswith(protocol.CONNECT_PATH):
-            return control
+            if isinstance(queue[0], Exception):
+                raise queue.pop(0)
+            return queue.pop(0)
 
         async def data():
             raise data_error
@@ -100,28 +119,42 @@ def fake_connector(control: FakeControl, data_error: Exception | None = None):
     return connector
 
 
-async def run_client(control: FakeControl, port: int = 9, **kwargs) -> tuple[int, list[str]]:
-    lines: list[str] = []
+def client(port: int, lines: list[str], connector, backoff: Backoff | None = None) -> Client:
     config = ClientConfig("s", auth="token", token="t", url="http://s")
-    client = Client(config, port, ["app"], "127.0.0.1", out=lines.append, connector=fake_connector(control, **kwargs))
-    return await client.run(), lines
+    return Client(config, port, ["app"], "127.0.0.1", out=lines.append, connector=connector, backoff=backoff or NO_WAIT)
 
 
-async def test_unknown_messages_are_ignored_and_closing_ends_the_session() -> None:
-    control = FakeControl(
+async def run_client(*controls: FakeControl | Exception, port: int = 9) -> tuple[int, list[str]]:
+    lines: list[str] = []
+    return await client(port, lines, fake_connector(*controls)).run(), lines
+
+
+def welcome() -> str:
+    return protocol.encode("welcome", identity="ci")
+
+
+async def test_unknown_messages_are_ignored_and_a_closed_session_reconnects() -> None:
+    control = FakeControl([welcome(), protocol.encode("future-feature"), protocol.encode("bound", name="app", url="u")])
+    assert await run_client(control) == (
+        1,
         [
-            protocol.encode("welcome", identity="ci"),
-            protocol.encode("future-feature"),
-            protocol.encode("bound", name="app", url="http://app.s"),
-        ]
+            "connected as ci",
+            "ready: u",
+            "connection lost: the server closed the connection; retrying in 0s",
+            "error: authentication failed",
+        ],
     )
-    assert await run_client(control) == (0, ["connected as ci", "ready: http://app.s"])
     assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "bind", "name": "app"}]
+
+
+async def test_rejections_end_the_client() -> None:
+    control = FakeControl([welcome(), protocol.encode("rejected", reason="app is already bound by bob")])
+    assert await run_client(control) == (1, ["connected as ci", "rejected: app is already bound by bob"])
 
 
 async def test_local_port_failures_are_reported(unused_tcp_port: int) -> None:
     hold = asyncio.Event()
-    control = FakeControl([protocol.encode("welcome", identity="ci"), protocol.encode("open", id="s1")], hold)
+    control = FakeControl([welcome(), protocol.encode("open", id="s1")], hold)
     session = asyncio.create_task(run_client(control, port=unused_tcp_port))
     async with asyncio.timeout(5):
         while not control.sent or control.sent[-1]["type"] != "open-failed":
@@ -140,15 +173,11 @@ async def test_data_connection_failures_close_the_local_socket() -> None:
         writer.close()
 
     server = await asyncio.start_server(local, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
     hold = asyncio.Event()
-    control = FakeControl([protocol.encode("welcome", identity="ci"), protocol.encode("open", id="s1")], hold)
+    control = FakeControl([welcome(), protocol.encode("open", id="s1")], hold)
     async with server:
-        lines: list[str] = []
-        config = ClientConfig("s", auth="token", token="t", url="http://s")
         connector = fake_connector(control, data_error=OSError("refused"))
-        client = Client(config, port, ["app"], "127.0.0.1", out=lines.append, connector=connector)
-        session = asyncio.create_task(client.run())
+        session = asyncio.create_task(client(server.sockets[0].getsockname()[1], [], connector).run())
         await asyncio.wait_for(accepted.wait(), 5)
         await asyncio.sleep(0.05)
         hold.set()
@@ -162,37 +191,105 @@ async def test_client_errors_are_printed() -> None:
     assert lines == ["error: no token configured; set one with `wildburrow login --token TOKEN`"]
 
 
-async def test_connection_errors_are_printed(unused_tcp_port: int) -> None:
+async def test_bad_urls_are_printed() -> None:
+    lines: list[str] = []
+    config = ClientConfig("s", auth="token", token="t", url="http://")
+    assert await Client(config, 9, ["a"], "127.0.0.1", out=lines.append).run() == 1
+    assert lines[0].startswith("error: ")
+
+
+async def test_unreachable_servers_are_retried(unused_tcp_port: int) -> None:
     lines: list[str] = []
     config = ClientConfig("s", auth="token", token="t", url=f"http://127.0.0.1:{unused_tcp_port}")
-    assert await Client(config, 9, ["a"], "127.0.0.1", out=lines.append).run() == 1
-    assert lines[0].startswith(f"error: connection to ws://127.0.0.1:{unused_tcp_port} failed:")
+    session = asyncio.create_task(Client(config, 9, ["a"], "127.0.0.1", out=lines.append, backoff=NO_WAIT).run())
+    async with asyncio.timeout(5):
+        while len(lines) < 3:
+            await asyncio.sleep(0.01)
+    session.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session
+    assert all(line.startswith(f"could not connect to ws://127.0.0.1:{unused_tcp_port}: ") for line in lines)
+    assert all(line.endswith("; retrying in 0s") for line in lines)
 
 
-async def test_connection_errors_without_a_message_name_the_error() -> None:
-    def reset(url: str, **kwargs):
-        raise ConnectionResetError
-
-    lines: list[str] = []
-    config = ClientConfig("s", auth="token", token="t", url="https://s")
-    assert await Client(config, 9, ["a"], "127.0.0.1", out=lines.append, connector=reset).run() == 1
-    assert lines == ["error: connection to wss://s failed: ConnectionResetError"]
+async def test_errors_without_a_message_name_the_error() -> None:
+    assert await run_client(ConnectionResetError(), TimeoutError()) == (
+        1,
+        [
+            "could not connect to ws://s: ConnectionResetError; retrying in 0s",
+            "could not connect to ws://s: TimeoutError; retrying in 0s",
+            "error: authentication failed",
+        ],
+    )
 
 
 @pytest.mark.parametrize(
     ("close", "line"),
     [
-        (Close(4401, "authentication failed"), "error: authentication failed"),
-        (Close(1000, ""), "error: connection to ws://s closed"),
-        (None, "error: connection to ws://s closed"),
+        (Close(1001, "going away"), "could not connect to ws://s: going away; retrying in 0s"),
+        (Close(1006, ""), "could not connect to ws://s: connection closed; retrying in 0s"),
+        (None, "could not connect to ws://s: connection closed; retrying in 0s"),
     ],
 )
-async def test_server_closes_are_explained(close: Close | None, line: str) -> None:
-    class Closing(FakeControl):
-        async def recv(self) -> str:
-            raise ConnectionClosedOK(close, None)
+async def test_dropped_connections_are_retried(close: Close | None, line: str) -> None:
+    assert await run_client(Refused(close)) == (1, [line, "error: authentication failed"])
 
-    assert await run_client(Closing([])) == (1, [line])
+
+@pytest.mark.parametrize(
+    ("close", "line"),
+    [
+        (AUTH_FAILED, "error: authentication failed"),
+        (Close(4400, "bad message"), "error: bad message"),
+        (Close(4400, ""), "error: closed with code 4400"),
+    ],
+)
+async def test_refusals_are_not_retried(close: Close, line: str) -> None:
+    assert await run_client(Refused(close), FakeControl([])) == (1, [line])
+
+
+async def test_backoff_grows_until_a_login_succeeds() -> None:
+    lines: list[str] = []
+    session = [welcome()]
+    connector = fake_connector(OSError("a"), OSError("b"), FakeControl(session), OSError("c"))
+    assert await client(9, lines, connector, Backoff(0.001, 0.002)).run() == 1
+    assert lines == [
+        "could not connect to ws://s: a; retrying in 0.001s",
+        "could not connect to ws://s: b; retrying in 0.002s",
+        "connected as ci",
+        "connection lost: the server closed the connection; retrying in 0.001s",
+        "connection lost: c; retrying in 0.002s",
+        "error: authentication failed",
+    ]
+
+
+def test_backoff_doubles_up_to_the_maximum() -> None:
+    backoff = Backoff(1, 5)
+    assert [backoff.next() for _ in range(5)] == [1, 2, 4, 5, 5]
+    backoff.reset()
+    assert backoff.next() == 1
+    capped = Backoff(10, 3)
+    assert [capped.next() for _ in range(2)] == [3, 3]
+
+
+@pytest.mark.parametrize(
+    ("failure", "line"),
+    [
+        (OSError("refused"), "error: could not connect to ws://s: refused"),
+        (FakeControl([welcome()]), "error: connection lost: the server closed the connection"),
+    ],
+)
+async def test_reconnecting_can_be_turned_off(failure: FakeControl | Exception, line: str) -> None:
+    lines: list[str] = []
+    config = ClientConfig("s", auth="token", token="t", url="http://s", reconnect=False)
+    client = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=fake_connector(failure))
+    assert await client.run() == 1
+    assert lines[-1] == line
+
+
+def test_backoff_follows_the_config() -> None:
+    config = ClientConfig("s", auth="token", token="t", url="http://s", retry_delay=0.5, retry_max=2)
+    backoff = Client(config, 9, ["app"], "127.0.0.1")._backoff
+    assert [backoff.next() for _ in range(4)] == [0.5, 1, 2, 2]
 
 
 def test_run_prints_to_stderr(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

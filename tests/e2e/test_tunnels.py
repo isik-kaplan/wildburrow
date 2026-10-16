@@ -92,15 +92,31 @@ async def test_names_are_released_on_disconnect(
     await second.line("ready:")
 
 
-@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize(("first", "second"), [("key", "password"), ("password", "key")])
 async def test_taken_name_is_refused(
+    start_server: StartServer, connect: Connect, backend: Backend, first: str, second: str
+) -> None:
+    running = await start_server()
+    holder = await connect(running.ssh_port, first, *forward("*.foo", backend.port))
+    await holder.line("ready:")
+    other = await connect(running.ssh_port, second, *forward("*.foo", 9))
+    assert (await other.line("rejected:")).startswith("rejected: *.foo is already bound by ")
+    assert await other.wait() == 1
+    assert (await get(running.http_port, f"a.foo.{DOMAIN}"))[0] == 200
+
+
+@pytest.mark.parametrize("method", METHODS)
+async def test_the_same_identity_moves_a_name(
     start_server: StartServer, connect: Connect, backend: Backend, method: str
 ) -> None:
     running = await start_server()
-    first = await connect(running.ssh_port, "key", *forward("*.foo", backend.port))
-    await first.line("ready:")
-    second = await connect(running.ssh_port, method, *forward("*.foo", 9))
-    assert await second.wait() != 0
+    old = await connect(running.ssh_port, method, *forward("*.foo", 9))
+    await old.line("ready:")
+    new = await connect(running.ssh_port, method, *forward("*.foo", backend.port))
+    await new.line("ready:")
+    assert (await get(running.http_port, f"a.foo.{DOMAIN}"))[0] == 200
+    await old.close()
+    await asyncio.sleep(0.2)
     assert (await get(running.http_port, f"a.foo.{DOMAIN}"))[0] == 200
 
 
