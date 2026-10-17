@@ -25,8 +25,7 @@ services:
       - traefik.tcp.routers.wildburrow.tls.passthrough=true
       - traefik.tcp.routers.wildburrow.service=wildburrow
       - traefik.tcp.services.wildburrow.loadbalancer.server.port=443
-      - traefik.tcp.services.wildburrow.loadbalancer.serverstransport=wildburrow-proxy@docker
-      - traefik.tcp.serverstransports.wildburrow-proxy.proxyprotocol.version=2
+      - traefik.tcp.services.wildburrow.loadbalancer.proxyprotocol.version=2
       - traefik.http.routers.wildburrow-http.rule=Host(`tunnel.example.com`) || HostRegexp(`^.+\.tunnel\.example\.com$`)
       - traefik.http.routers.wildburrow-http.entrypoints=http
       - traefik.http.services.wildburrow-http.loadbalancer.server.port=80

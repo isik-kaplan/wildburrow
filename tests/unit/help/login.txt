@@ -1,23 +1,17 @@
-usage: wildburrow login [-h] [--token TOKEN] [--ssh-port SSH_PORT] [--user USER]
-                        [--transport {ssh,websocket}] [--auth {key,password,token}]
-                        [--identity IDENTITY] [--url URL] [--reconnect | --no-reconnect]
-                        [--retry-delay SECONDS] [--retry-max SECONDS]
-                        server
+Usage: wildburrow login [OPTIONS] [SERVER]
 
-positional arguments:
-  server
+  Save the server and how to connect to it. Asks for each, given no SERVER in a terminal.
 
-options:
-  -h, --help            show this help message and exit
-  --token TOKEN
-  --ssh-port SSH_PORT
-  --user USER
-  --transport {ssh,websocket}
-  --auth {key,password,token}
-  --identity IDENTITY   SSH key for websocket
-  --url URL             websocket base URL override
-  --reconnect, --no-reconnect
-                        reconnect when the connection drops (default: on)
-  --retry-delay SECONDS
-                        first wait before reconnecting, doubled after each failure (default: 1)
-  --retry-max SECONDS   longest wait between reconnects (default: 30)
+Options:
+  --token TEXT                  token for the token auth method
+  --ssh-port INTEGER            (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   (default: ssh)
+  --auth [key|password|token]   (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  -h, --help                    Show this message and exit.

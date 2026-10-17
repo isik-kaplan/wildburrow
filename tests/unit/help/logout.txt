@@ -1,0 +1,7 @@
+Usage: wildburrow logout [OPTIONS]
+
+  Forget the saved server.
+
+Options:
+  -y, --yes   don't ask first
+  -h, --help  Show this message and exit.

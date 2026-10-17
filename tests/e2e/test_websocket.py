@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -172,6 +173,44 @@ async def test_routing_streams_and_disconnect(
     await asyncio.sleep(0.2)
     assert (await get(running.http_port, f"a.foo.{DOMAIN}"))[0] == 404
     assert running.server.ctx.registry.names() == []
+
+
+class ConnectProxy:
+    def __init__(self, upstream: int) -> None:
+        self.upstream = upstream
+        self.targets: list[str] = []
+
+    async def __call__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = await reader.readuntil(b"\r\n\r\n")
+        self.targets.append(head.split()[1].decode())
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", self.upstream)
+        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        await asyncio.gather(pipe(reader, upstream_writer), pipe(upstream_reader, writer))
+
+
+async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    with contextlib.suppress(ConnectionError):
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    writer.close()
+
+
+async def test_the_client_goes_through_the_proxy_from_the_environment(
+    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = await start_server(**ws_env)
+    proxy = ConnectProxy(running.http_port)
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("https_proxy", f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}")
+    task, out = start_client(running, client_config(credentials, "token"), backend.port, ["app"], connector=connect)
+    await out.wait_for("ready:")
+    assert await get(running.http_port, f"app.{DOMAIN}", "/p") == (200, b"GET /p HTTP/1.1")
+    await stop(task)
+    server.close()
+    assert proxy.targets == [f"{DOMAIN}:80", f"{DOMAIN}:80"]
 
 
 async def test_unreachable_local_port_is_bad_gateway(

@@ -1,17 +1,28 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar
 
 import asyncssh
 
 from wildburrow import protocol
 from wildburrow.auth import sshsig
-from wildburrow.config import ConfigError
+from wildburrow.config import SHOWN, ConfigError
 from wildburrow.core.types import Identity, Peer, PublicKeyCredential, SignedChallengeCredential
+
+# The keys that can already log in to the account the server runs as.
+DEFAULT_AUTHORIZED_KEYS = Path("~/.ssh/authorized_keys")
 
 
 @dataclass(frozen=True, slots=True)
 class KeySettings:
-    authorized_keys: str
+    authorized_keys: str = field(default="", metadata={SHOWN: str(DEFAULT_AUTHORIZED_KEYS)})
+
+
+def _default_keys() -> str:
+    try:
+        return DEFAULT_AUTHORIZED_KEYS.expanduser().read_text()
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"authorized_keys: not set, and {DEFAULT_AUTHORIZED_KEYS} is unreadable: {exc}") from None
 
 
 class KeyAuth:
@@ -20,7 +31,7 @@ class KeyAuth:
 
     def __init__(self, settings: KeySettings) -> None:
         self._keys: dict[bytes, tuple[str, str]] = {}
-        for line in settings.authorized_keys.splitlines():
+        for line in (settings.authorized_keys or _default_keys()).splitlines():
             if not (line := line.strip()) or line.startswith("#"):
                 continue
             try:

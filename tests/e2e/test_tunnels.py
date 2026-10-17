@@ -1,12 +1,26 @@
 import asyncio
 import contextlib
 import logging
+import os
 import socket
+import sys
+from pathlib import Path
 
 import asyncssh
 import pytest
 
-from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Credentials, Running, StartServer, get, http
+from tests.conftest import (
+    DOMAIN,
+    TIMEOUT,
+    Backend,
+    Connect,
+    Credentials,
+    Running,
+    StartServer,
+    free_port,
+    get,
+    http,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -363,3 +377,29 @@ async def test_an_unnamed_forward_is_refused_to_the_client(start_server: StartSe
     async with ssh_session(running, credentials) as conn:
         with pytest.raises(asyncssh.ChannelListenError):
             await conn.forward_remote_port("", 0, "127.0.0.1", 9)
+
+
+async def test_serve_from_the_command_line_with_the_accounts_keys(
+    connect: Connect, credentials: Credentials, backend: Backend, tmp_path: Path
+) -> None:
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "authorized_keys").write_text(credentials.public_key)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("WILDBURROW_")} | {
+        "HOME": str(tmp_path)
+    }
+    http_port, ssh_port = free_port(), free_port()
+    server = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "wildburrow", "serve", f"--domain={DOMAIN}", "--data-dir", str(tmp_path / "data"),
+        "--http-host", "127.0.0.1", "--http-port", str(http_port),
+        "--ssh-host", "127.0.0.1", "--ssh-port", str(ssh_port),
+        stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True,
+    )  # fmt: skip
+    assert server.stderr is not None
+    async with asyncio.timeout(TIMEOUT):
+        while not (line := (await server.stderr.readline()).decode()).endswith(f"serving *.{DOMAIN}\n"):
+            assert line
+    client = await connect(ssh_port, "key", *forward("app", backend.port))
+    assert await client.line("ready:") == f"ready: http://app.{DOMAIN}"
+    assert await get(http_port, f"app.{DOMAIN}") == (200, b"GET / HTTP/1.1")
+    server.terminate()
+    assert await server.wait() == 0

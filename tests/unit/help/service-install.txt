@@ -1,0 +1,79 @@
+Usage: wildburrow service install [OPTIONS]
+
+  Install the server as a service and start it. Asks for each setting, given none in a terminal.
+
+Options:
+  --force     replace an existing install
+  -h, --help  Show this message and exit.
+
+Server:
+  --domain DOMAIN                 required
+  --transports TRANSPORTS         default: ssh
+  --auth AUTH                     default: key
+  --http-host HTTP_HOST           default: 0.0.0.0
+  --http-port HTTP_PORT           default: 80
+  --max-depth MAX_DEPTH           default: 5
+  --max-header-bytes MAX_HEADER_BYTES
+                                  default: 65536
+  --header-timeout HEADER_TIMEOUT
+                                  default: 30
+  --dns DNS                       optional
+  --dns-manage-records / --no-dns-manage-records
+                                  default: off
+  --https-host HTTPS_HOST         default: 0.0.0.0
+  --https-port HTTPS_PORT         default: 443
+  --acme-directory ACME_DIRECTORY
+                                  default: https://acme-v02.api.letsencrypt.org/directory
+  --acme-email ACME_EMAIL         optional
+  --acme-propagation-seconds ACME_PROPAGATION_SECONDS
+                                  default: 30
+  --acme-timeout-seconds ACME_TIMEOUT_SECONDS
+                                  default: 300
+  --renew-before-days RENEW_BEFORE_DAYS
+                                  default: 30
+  --renew-interval-seconds RENEW_INTERVAL_SECONDS
+                                  default: 43200
+  --http-proxy-protocol / --no-http-proxy-protocol
+                                  default: off
+  --https-proxy-protocol / --no-https-proxy-protocol
+                                  default: off
+  --proxy-trusted PROXY_TRUSTED   default: 127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.
+                                  0/16,fc00::/7
+
+transport plugin ssh:
+  --ssh-host HOST                 default: 0.0.0.0
+  --ssh-port PORT                 default: 2222
+  --ssh-login-timeout LOGIN_TIMEOUT
+                                  default: 30
+  --ssh-keepalive-interval KEEPALIVE_INTERVAL
+                                  default: 30
+
+transport plugin websocket:
+  --websocket-host HOST           default: 127.0.0.1
+  --websocket-port PORT           default: 0
+  --websocket-login-timeout LOGIN_TIMEOUT
+                                  default: 30
+  --websocket-open-timeout OPEN_TIMEOUT
+                                  default: 10
+  --websocket-max-message-bytes MAX_MESSAGE_BYTES
+                                  default: 1048576
+
+auth plugin key:
+  --auth-key-authorized-keys AUTHORIZED_KEYS
+                                  default: ~/.ssh/authorized_keys
+
+auth plugin password:
+  --auth-password-hash HASH       required
+  --auth-password-max-failures MAX_FAILURES
+                                  default: 5
+  --auth-password-block-seconds BLOCK_SECONDS
+                                  default: 900
+
+auth plugin token:
+  --auth-token-hashes HASHES  required
+
+dns plugin cloudflare:
+  --dns-cloudflare-api-token API_TOKEN
+                                  required
+
+  Add -file to an option to read the value from a file; the service keeps its own copy.

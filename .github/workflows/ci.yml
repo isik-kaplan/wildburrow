@@ -1,8 +1,9 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  # Pushes to master run this through publish.yml instead, so publishing can wait on it.
+  workflow_call:
 
 jobs:
   lint:
@@ -56,7 +57,23 @@ jobs:
           version: "0.13.0"
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --all-extras
-      - run: uv run pytest -n auto -m "not acme" --no-cov
+      - run: uv run pytest -n auto -m "not acme and not system" --no-cov
+
+  service:
+    # Installs the real service: systemd on Linux and launchd on macOS, through the runners' passwordless sudo.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+          python-version: "3.14"
+      - run: uv sync --locked --all-extras
+      - run: uv run pytest -m system --no-cov tests/system
 
   image:
     runs-on: ubuntu-latest

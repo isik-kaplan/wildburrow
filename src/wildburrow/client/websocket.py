@@ -93,7 +93,7 @@ class Client:
             greeting = hello(self._config, self._ask)
             while True:
                 try:
-                    async with self._connect(f"{self._base}{protocol.CONNECT_PATH}", proxy=None) as control:
+                    async with self._connect(f"{self._base}{protocol.CONNECT_PATH}") as control:
                         if (code := await self._session(control, greeting)) is not None:
                             return code
                     reason = "the server closed the connection"
@@ -156,7 +156,7 @@ class Client:
                 await control.send(protocol.encode("open-failed", id=stream_id))
             return
         try:
-            data = await self._connect(f"{self._base}{protocol.DATA_PATH}{stream_id}", proxy=None)
+            data = await self._connect(f"{self._base}{protocol.DATA_PATH}{stream_id}")
         except OSError, InvalidHandshake:
             local[1].close()
             return

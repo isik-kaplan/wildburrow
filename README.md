@@ -1,6 +1,7 @@
 # wildburrow
 
 Self-hosted HTTPS tunnels on your own domain, with wildcard names at any depth and certificates issued on demand.
+It runs on Linux and macOS.
 
 ```sh
 wildburrow 3000 myapp           # https://myapp.tunnel.example.com
@@ -20,10 +21,15 @@ challenge while your client waits, then confirms the bind. Later binds under the
 ## Client
 
 ```sh
-uv tool install git+https://github.com/isik-kaplan/wildburrow    # or: pipx install git+https://...
-wildburrow login tunnel.example.com
+uv tool install wildburrow    # or: pipx install wildburrow
+wildburrow login              # asks for the server and how to connect to it
 wildburrow 3000 '*.foo'
+wildburrow logout             # forgets the saved server
 ```
+
+`login` keeps its answers in `~/.config/wildburrow/config.toml` until you log in again or out; nothing in it expires,
+and every tunnel logs in afresh. Given options, `wildburrow login tunnel.example.com --transport websocket`, it asks
+nothing and saves what you passed.
 
 Two transports are available:
 
@@ -44,6 +50,9 @@ server that isn't reachable yet. A refused login or a rejected name ends the cli
 any disconnect end it. `login` saves these flags like the others and `connect` overrides them. Binding a name you
 already hold moves it to the new connection; other identities are refused.
 
+The websocket transport goes through an HTTP proxy from `HTTPS_PROXY` (or `HTTP_PROXY`) unless `NO_PROXY` excludes the
+server. The ssh transport follows your SSH config, so a `ProxyJump` or `ProxyCommand` there applies.
+
 Plain `ssh` works without the client:
 
 ```sh
@@ -52,81 +61,75 @@ ssh -T -p 2222 -R '*.foo:80:localhost:3000' tunnel.example.com
 
 ## Server
 
+```sh
+uv tool install 'wildburrow[server]'
+wildburrow service install
+```
+
+`service install` asks for the domain, whether to serve HTTPS and through which DNS provider, and which keys may open
+tunnels, then installs the server as a system service and starts it: systemd on Linux, launchd on macOS. It asks for
+sudo itself. Point `tunnel.example.com` and `*.tunnel.example.com` at the server; DNS wildcards match any depth, so
+deeper names resolve too.
+
+```sh
+wildburrow service status       # running or not, and where the logs are
+wildburrow service edit         # the same questions, answered with the current settings
+wildburrow service uninstall    # stop and remove it, asking whether to keep the certificates
+```
+
+Each of them takes the settings as options instead, and then asks nothing:
+
+```sh
+wildburrow service install --domain=tunnel.example.com --acme-email=you@example.com \
+  --dns=cloudflare --dns-cloudflare-api-token-file=/root/cloudflare-token
+wildburrow service edit --http-port=8080
+wildburrow service uninstall --yes --purge
+```
+
+Without a DNS provider the server serves plain HTTP on port 80. With one, it gets wildcard certificates by proving it
+owns the domain through DNS: port 80 redirects bound names to HTTPS, and port 443 terminates TLS, picking the
+certificate by SNI. A request whose `Host` isn't covered by the certificate of its connection gets `421`. Try
+`--acme-directory=https://acme-staging-v02.api.letsencrypt.org/directory` until the first certificate comes through, so
+a mistake doesn't run into Let's Encrypt's rate limits.
+
+Unless told otherwise, the service lets in the keys in your `~/.ssh/authorized_keys`, copied when you install or edit.
+Its settings live in `/etc/wildburrow`, readable only by root and the service.
+
+On Linux, an install under a home directory, which is where `uv tool install` puts it, runs as its owner with that
+home read-only; one outside any home, like `/opt`, runs as a throwaway user that systemd makes up. Either way it can
+bind ports 80 and 443 and nothing more. On macOS it runs as the install's owner, which macOS lets bind those ports.
+
+### Foreground
+
+`wildburrow serve` runs the server in the foreground with the same settings, read from options, an `--env-file` of
+`KEY=VALUE` lines, or the environment:
+
+```sh
+sudo wildburrow serve --domain=tunnel.example.com
+```
+
 ### Docker
 
 ```sh
-docker build -t wildburrow .
-docker run -p 80:80 -p 443:443 -p 2222:2222 -v wildburrow-data:/data \
+docker run -d --restart unless-stopped -p 80:80 -p 443:443 -p 2222:2222 -v wildburrow-data:/data \
   -e WILDBURROW_DOMAIN=tunnel.example.com \
   -e WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   -e WILDBURROW_DNS=cloudflare -e WILDBURROW_DNS_CLOUDFLARE_API_TOKEN=... \
   -e WILDBURROW_ACME_EMAIL=you@example.com \
-  wildburrow
+  ghcr.io/isik-kaplan/wildburrow
 ```
 
-Point `tunnel.example.com` and `*.tunnel.example.com` at the server. DNS wildcards match any depth, so deeper names
-resolve too; set `WILDBURROW_DNS_MANAGE_RECORDS=true` to also create a `*.<parent>` CNAME for each nested wildcard.
-
-Without `WILDBURROW_DNS`, the server serves plain HTTP on `WILDBURROW_HTTP_PORT` and issues no certificates. With it,
-port 80 redirects bound names to HTTPS and port 443 terminates TLS, picking the certificate by SNI. A request whose
-`Host` isn't covered by the certificate of its connection gets `421`.
-
+The image comes in versions matching the package, for amd64 and arm64, and runs on Docker Desktop for macOS too.
 `examples/docker-compose.traefik.yml` runs it behind Traefik with TLS passthrough and PROXY protocol, for hosts where
 another proxy already owns ports 80 and 443.
 
-### Without Docker
-
-Install it as a tool and run `wildburrow serve`. It needs to bind ports below 1024, so give it
-`CAP_NET_BIND_SERVICE` rather than running it as root. A systemd service does that for a dynamic user:
-
-```sh
-# as root
-UV_TOOL_DIR=/opt/wildburrow UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/wildburrow/python \
-  uv tool install 'wildburrow[server] @ git+https://github.com/isik-kaplan/wildburrow'
-mkdir -p /etc/wildburrow && cp ~/.ssh/id_ed25519.pub /etc/wildburrow/authorized_keys
-cat > /etc/wildburrow/env <<'EOF'
-WILDBURROW_DOMAIN=tunnel.example.com
-WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS_FILE=/etc/wildburrow/authorized_keys
-EOF
-chmod 600 /etc/wildburrow/env
-```
-
-`/etc/systemd/system/wildburrow.service`:
-
-```ini
-[Unit]
-Description=wildburrow tunnel server
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-ExecStart=/usr/local/bin/wildburrow serve
-EnvironmentFile=/etc/wildburrow/env
-Environment=WILDBURROW_DATA_DIR=%S/wildburrow
-DynamicUser=yes
-StateDirectory=wildburrow
-StateDirectoryMode=0700
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```sh
-systemctl daemon-reload && systemctl enable --now wildburrow
-journalctl -u wildburrow -f
-```
-
 ### Settings
 
-Every setting can also be read from a file by adding `_FILE` to its name, for secrets and multi-line values:
-`WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS_FILE=/etc/wildburrow/authorized_keys`.
+Every setting is an option of `serve`, `service install` and `service edit`, and an environment variable for `serve`:
+`--http-port 8080` is `WILDBURROW_HTTP_PORT=8080`, and an option wins over the variable. Adding `-file` to an option,
+or `_FILE` to a variable, reads the value from a file, for secrets and multi-line values:
+`--auth-key-authorized-keys-file=~/keys`. `wildburrow serve --help` lists them all, plugins included. A service has
+no `--data-dir`; its service manager decides where its data goes.
 
 | Variable | Default | |
 |---|---|---|
@@ -149,7 +152,7 @@ Every setting can also be read from a file by adding `_FILE` to its name, for se
 | `WILDBURROW_RENEW_BEFORE_DAYS` | `30` | Renew certificates in use this close to expiry |
 | `WILDBURROW_SSH_PORT` | `2222` | SSH transport port (`_HOST`, `_LOGIN_TIMEOUT` too) |
 | `WILDBURROW_WEBSOCKET_OPEN_TIMEOUT` | `10` | Seconds a client has to open a visitor stream |
-| `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | | OpenSSH public keys, one per line |
+| `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | `~/.ssh/authorized_keys` | OpenSSH public keys, one per line |
 | `WILDBURROW_AUTH_PASSWORD_HASH` | | argon2 hash from `wildburrow hash-password` |
 | `WILDBURROW_AUTH_PASSWORD_MAX_FAILURES` | `5` | Failed passwords per address before blocking |
 | `WILDBURROW_AUTH_PASSWORD_BLOCK_SECONDS` | `900` | How long failures count against an address |
@@ -161,15 +164,17 @@ Every setting can also be read from a file by adding `_FILE` to its name, for se
 Transports, auth methods and DNS providers are plugins registered through entry points: `wildburrow.transports`,
 `wildburrow.auth` and `wildburrow.dns`. A plugin class has a `Settings` dataclass, filled from
 `WILDBURROW_<NAME>_*` (transports), `WILDBURROW_AUTH_<NAME>_*` or `WILDBURROW_DNS_<NAME>_*`, and is constructed with
-it. A DNS plugin implements `create_txt`, `delete_txt`, `ensure_cname` and `aclose`; see `wildburrow/dns/base.py`.
+it. Its fields become `serve` options the same way. A DNS plugin implements `create_txt`, `delete_txt`, `ensure_cname`
+and `aclose`; see `wildburrow/dns/base.py`.
 Install a package that registers an entry point and select it by name.
 
 ## Development
 
 ```sh
 uv sync --all-extras
-uv run pytest -n auto                 # needs Docker for the Pebble ACME tests
-uv run pytest -n auto -m "not acme"   # without Docker
+uv run pytest -n auto                                # needs Docker for the Pebble ACME tests
+uv run pytest -n auto -m "not acme and not system"   # without Docker
+uv run pytest -m system --no-cov tests/system        # installs the real service; CI runs it on Linux and macOS
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -180,3 +185,6 @@ run in `mutants/`, both source and tests; CI keeps that directory cached between
 uv run python -m scripts.mutation run          # re-test what changed
 uv run python -m scripts.mutation run --full   # re-test everything
 ```
+
+Every push to `master` runs the tests and the mutation run, then publishes to PyPI and `ghcr.io` when the version in
+`pyproject.toml` isn't on PyPI yet.

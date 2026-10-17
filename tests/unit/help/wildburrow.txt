@@ -1,15 +1,16 @@
-usage: wildburrow [-h] [--version] {connect,login,serve,hash-password,token} ...
+Usage: wildburrow [OPTIONS] COMMAND [ARGS]...
 
-Expose local ports on your own domain.
+  Expose local ports on your own domain.
 
-positional arguments:
-  {connect,login,serve,hash-password,token}
-    connect             tunnel a local port (default command)
-    login               save the server and how to connect to it
-    serve               run the server (configured through WILDBURROW_* variables)
-    hash-password       print an argon2 hash for the password auth plugin
-    token               create a token for the token auth plugin
+Options:
+  --version   Show the version and exit.
+  -h, --help  Show this message and exit.
 
-options:
-  -h, --help            show this help message and exit
-  --version             show program's version number and exit
+Commands:
+  connect        Tunnel a local port (the default command): wildburrow 3000 myapp '*.foo'
+  login          Save the server and how to connect to it.
+  logout         Forget the saved server.
+  serve          Run the server.
+  service        Run the server as a system service: systemd on Linux, launchd on macOS.
+  hash-password  Print an argon2 hash for the password auth plugin.
+  token          Create a token for the token auth plugin.

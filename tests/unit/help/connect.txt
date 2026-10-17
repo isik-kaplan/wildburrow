@@ -1,26 +1,18 @@
-usage: wildburrow connect [-h] [--server SERVER] [--local-host LOCAL_HOST] [--ssh-port SSH_PORT]
-                          [--user USER] [--transport {ssh,websocket}]
-                          [--auth {key,password,token}] [--identity IDENTITY] [--url URL]
-                          [--reconnect | --no-reconnect] [--retry-delay SECONDS]
-                          [--retry-max SECONDS]
-                          port name [name ...]
+Usage: wildburrow connect [OPTIONS] PORT NAME...
 
-positional arguments:
-  port
-  name                  e.g. myapp, '*.foo', '*.bar.foo'
+  Tunnel a local port (the default command): wildburrow 3000 myapp '*.foo'
 
-options:
-  -h, --help            show this help message and exit
-  --server SERVER
-  --local-host LOCAL_HOST
-  --ssh-port SSH_PORT
-  --user USER
-  --transport {ssh,websocket}
-  --auth {key,password,token}
-  --identity IDENTITY   SSH key for websocket
-  --url URL             websocket base URL override
-  --reconnect, --no-reconnect
-                        reconnect when the connection drops (default: on)
-  --retry-delay SECONDS
-                        first wait before reconnecting, doubled after each failure (default: 1)
-  --retry-max SECONDS   longest wait between reconnects (default: 30)
+Options:
+  --server TEXT                 server to use instead of the saved one
+  --local-host TEXT             where the local port listens  [default: localhost]
+  --ssh-port INTEGER            (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   (default: ssh)
+  --auth [key|password|token]   (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  -h, --help                    Show this message and exit.

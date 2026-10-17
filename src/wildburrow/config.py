@@ -7,6 +7,10 @@ PREFIX = "WILDBURROW_"
 TRUE = {"1", "true", "yes", "on"}
 FALSE = {"0", "false", "no", "off"}
 FILE_SUFFIX = "_FILE"
+# Field metadata naming the default to show where the real one is worked out later.
+SHOWN = "shown"
+# Field metadata marking a value to ask for without echoing it.
+SECRET = "secret"  # noqa: S105
 
 
 class ConfigError(Exception):

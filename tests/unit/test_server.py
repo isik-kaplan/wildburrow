@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import stat
 from pathlib import Path
 
@@ -155,3 +156,57 @@ async def test_names_are_measured_with_the_domain(tmp_path: Path) -> None:
     name = ".".join(["b" * 60] * 3)
     with pytest.raises(BindRejected, match=rf"^'{name}': longer than 253 characters with the domain$"):
         await ctx.bind(name, object(), print)
+
+
+class ClosingDNS:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def bindable(port: int) -> bool:
+    with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+async def test_a_failed_start_stops_what_already_started(tmp_path: Path) -> None:
+    http_port = free_port()
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        values = env(tmp_path, HTTP_PORT=str(http_port), SSH_PORT=str(taken.getsockname()[1]))
+        server = Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+        with pytest.raises(OSError, match="address already in use"):
+            await server.__aenter__()
+    assert bindable(http_port)
+
+
+async def test_a_failed_tls_start_closes_the_dns_plugin(tmp_path: Path) -> None:
+    http_port = free_port()
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        values = env(tmp_path, HTTP_PORT=str(http_port), HTTPS_HOST="127.0.0.1", HTTPS_PORT=str(taken.getsockname()[1]))
+        server = Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+        server.dns = dns = ClosingDNS()
+        with pytest.raises(OSError, match="address already in use"):
+            await server.__aenter__()
+    assert bindable(http_port)
+    assert dns.closed
+    assert server.transports[0]._server is None
+
+
+async def test_a_tls_server_shuts_down_cleanly(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    values = env(tmp_path, HTTPS_HOST="127.0.0.1", HTTPS_PORT="0", ACME_DIRECTORY=f"http://127.0.0.1:{free_port()}/")
+    server = Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+    server.dns = dns = ClosingDNS()
+    async with server:
+        while "getting the *.tunnel.example.com certificate failed; retrying in 300s" not in caplog.messages:
+            await asyncio.sleep(0.01)
+    assert dns.closed

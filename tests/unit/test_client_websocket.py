@@ -444,8 +444,8 @@ async def test_a_stream_relays_the_local_port_over_its_own_connection(monkeypatc
     assert await session == 1
     assert opened == [("local.test", port)]
     assert connections[:2] == [
-        ("ws://s/_wildburrow/connect", {"proxy": None}),
-        ("ws://s/_wildburrow/data/s1", {"proxy": None}),
+        ("ws://s/_wildburrow/connect", {}),
+        ("ws://s/_wildburrow/data/s1", {}),
     ]
     assert data.sent == [b"pong:ping", protocol.EOF_MARKER]
     assert lines[:2] == ["connected as ci", "issuing"]

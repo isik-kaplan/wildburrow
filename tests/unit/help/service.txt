@@ -1,0 +1,12 @@
+Usage: wildburrow service [OPTIONS] COMMAND [ARGS]...
+
+  Run the server as a system service: systemd on Linux, launchd on macOS.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  edit       Change the service's settings and restart it.
+  install    Install the server as a service and start it.
+  status     Show whether the service runs, and where its settings and logs are.
+  uninstall  Stop the service and remove it.

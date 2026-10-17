@@ -1,7 +1,6 @@
-usage: wildburrow token [-h] name
+Usage: wildburrow token [OPTIONS] NAME
 
-positional arguments:
-  name
+  Create a token for the token auth plugin.
 
-options:
-  -h, --help  show this help message and exit
+Options:
+  -h, --help  Show this message and exit.

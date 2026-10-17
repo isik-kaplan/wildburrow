@@ -1,0 +1,6 @@
+Usage: wildburrow service status [OPTIONS]
+
+  Show whether the service runs, and where its settings and logs are.
+
+Options:
+  -h, --help  Show this message and exit.

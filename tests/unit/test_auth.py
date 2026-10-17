@@ -1,4 +1,6 @@
 import asyncio
+import pwd
+from pathlib import Path
 
 import asyncssh
 import pytest
@@ -39,7 +41,6 @@ async def test_key_auth_matches_listed_keys() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("", "authorized_keys: no keys found"),
         ("# only a comment", "authorized_keys: no keys found"),
         (
             "ssh-ed25519 not-base64-and-then-some-more-text",
@@ -55,6 +56,45 @@ def test_key_auth_config_errors(text: str, message: str) -> None:
     with pytest.raises(ConfigError) as error:
         KeyAuth(KeySettings(text))
     assert str(error.value) == message
+
+
+async def test_key_auth_defaults_to_the_accounts_authorized_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".ssh").mkdir()
+    listed = public_key()
+    (tmp_path / ".ssh" / "authorized_keys").write_text(openssh_line(listed) + "\n")
+    auth = KeyAuth(KeySettings())
+    assert await auth.authenticate(PublicKeyCredential("u", listed.public_data), PEER) == Identity(
+        "laptop", "key", listed.get_fingerprint()
+    )
+    (tmp_path / ".ssh" / "authorized_keys").write_text("")
+    with pytest.raises(ConfigError, match=r"^authorized_keys: no keys found$"):
+        KeyAuth(KeySettings())
+
+
+def test_key_auth_without_keys_names_both_places(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(ConfigError) as error:
+        KeyAuth(KeySettings())
+    assert str(error.value) == (
+        "authorized_keys: not set, and ~/.ssh/authorized_keys is unreadable: "
+        f"[Errno 2] No such file or directory: '{tmp_path / '.ssh' / 'authorized_keys'}'"
+    )
+
+
+def test_key_auth_without_a_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_user(uid: int) -> None:
+        raise KeyError(uid)
+
+    monkeypatch.delenv("HOME")
+    monkeypatch.setattr(pwd, "getpwuid", no_user)
+    with pytest.raises(ConfigError) as error:
+        KeyAuth(KeySettings())
+    assert str(error.value) == (
+        "authorized_keys: not set, and ~/.ssh/authorized_keys is unreadable: Could not determine home directory."
+    )
 
 
 class Clock:

@@ -1,9 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-from wildburrow.config import ConfigError
+from wildburrow.config import SECRET, ConfigError
 from wildburrow.dns.base import DNSError
 
 API = "https://api.cloudflare.com/client/v4"
@@ -15,7 +15,7 @@ TIMEOUT = 30
 
 @dataclass(frozen=True, slots=True)
 class CloudflareSettings:
-    api_token: str
+    api_token: str = field(metadata={SECRET: True})
 
 
 class CloudflareDNS:

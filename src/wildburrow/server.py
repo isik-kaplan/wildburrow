@@ -42,7 +42,7 @@ class Server:
         self.transports: list[Any] = [plugins.load("transport", name, env) for name in settings.transports]
         self.dns: Any = plugins.load("dns", settings.dns, env) if settings.dns else None
         self.edges: list[Edge]
-        self._tasks: list[asyncio.Task[None]] = []
+        self._stack: contextlib.AsyncExitStack
 
     def _edge(self, port: int, proxied: bool, mode: Mode = Mode.PROXY, host: str = "", tls: Any = None) -> Edge:
         settings = self.settings
@@ -86,31 +86,34 @@ class Server:
 
     async def __aenter__(self) -> Self:
         self.settings.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if self.dns is not None:
-            certs = self._setup_tls()
-            in_use = lambda: {certs.parent(name) for name in self.ctx.registry.names()}  # noqa: E731
-            maintain = certs.maintain(in_use, self.settings.renew_interval_seconds, CERT_RETRY_SECONDS)
-            self._tasks.append(asyncio.create_task(maintain))
-        else:
-            self.edges = [self._edge(self.settings.http_port, self.settings.http_proxy_protocol)]
-        for edge in self.edges:
-            await edge.start()
-        for transport in self.transports:
-            await transport.start(self.ctx)
+        async with contextlib.AsyncExitStack() as stack:
+            if self.dns is not None:
+                stack.push_async_callback(self.dns.aclose)
+                certs = self._setup_tls()
+            else:
+                self.edges = [self._edge(self.settings.http_port, self.settings.http_proxy_protocol)]
+            for edge in self.edges:
+                await edge.start()
+                stack.push_async_callback(edge.stop)
+            for transport in self.transports:
+                await transport.start(self.ctx)
+                stack.push_async_callback(transport.stop)
+            if self.dns is not None:
+                in_use = lambda: {certs.parent(name) for name in self.ctx.registry.names()}  # noqa: E731
+                maintain = certs.maintain(in_use, self.settings.renew_interval_seconds, CERT_RETRY_SECONDS)
+                stack.push_async_callback(_cancel, asyncio.create_task(maintain))
+            self._stack = stack.pop_all()
         log.info("serving *.%s", self.ctx.domain)
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        for task in self._tasks:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for transport in self.transports:
-            await transport.stop()
-        for edge in self.edges:
-            await edge.stop()
-        if self.dns is not None:
-            await self.dns.aclose()
+        await self._stack.aclose()
+
+
+async def _cancel(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def serve(env: Mapping[str, str]) -> None:

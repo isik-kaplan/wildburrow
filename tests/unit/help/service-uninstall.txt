@@ -1,0 +1,8 @@
+Usage: wildburrow service uninstall [OPTIONS]
+
+  Stop the service and remove it.
+
+Options:
+  --purge     also delete the certificates, ACME account and SSH host key
+  -y, --yes   don't ask first
+  -h, --help  Show this message and exit.

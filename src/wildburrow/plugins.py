@@ -16,13 +16,16 @@ def available(kind: str) -> dict[str, Any]:
     return {ep.name: ep for ep in entry_points(group=group)}
 
 
+def prefix(kind: str, name: str) -> str:
+    return KINDS[kind][1].format(name.upper())
+
+
 def load(kind: str, name: str, env: Mapping[str, str]) -> Any:
     found = available(kind)
     if name not in found:
         raise config.ConfigError(f"unknown {kind} plugin {name!r}; installed: {', '.join(sorted(found)) or 'none'}")
     cls = found[name].load()
-    _, prefix = KINDS[kind]
-    settings = config.load(cls.Settings, env, prefix.format(name.upper()))
+    settings = config.load(cls.Settings, env, prefix(kind, name))
     try:
         return cls(settings)
     except config.ConfigError as exc:

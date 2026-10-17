@@ -3,9 +3,9 @@ name: Mutation
 # Pull requests and pushes re-test only the mutants a change can reach, starting from the newest cached run;
 # a manual run with `full` re-tests every mutant.
 on:
-  push:
-    branches: [master]
   pull_request:
+  # Pushes to master run this through publish.yml instead, so publishing can wait on it.
+  workflow_call:
   workflow_dispatch:
     inputs:
       full:
@@ -13,13 +13,12 @@ on:
         type: boolean
         default: false
 
-# A run cancelled part way never saves the results that make the next one cheap.
-concurrency:
-  group: mutation-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   mutmut:
+    # A run cancelled part way never saves the results that make the next one cheap.
+    concurrency:
+      group: mutation-${{ github.ref }}
+      cancel-in-progress: false
     if: >-
       github.event_name != 'pull_request'
       || contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
