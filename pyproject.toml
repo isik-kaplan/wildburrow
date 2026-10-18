@@ -104,6 +104,8 @@ markers = [
 ]
 filterwarnings = ["error"]
 timeout = 120
+# Ends the run outright: raised inside the code instead, a timeout can be caught and the hang carries on.
+timeout_method = "thread"
 
 [tool.coverage.run]
 source = ["wildburrow", "scripts"]
@@ -118,6 +120,10 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
 source_paths = ["src/wildburrow"]
 also_copy = ["scripts"]
 # The trampolines add statements no coverage gate can account for, and a fixed seed keeps a verdict repeatable.
-pytest_add_cli_args = ["--no-cov", "--hypothesis-seed=0", "-p", "scripts.mutation_killers"]
+# The slowest test takes seconds, so a test still going at 30 is a mutant hanging it, not a slow test.
+pytest_add_cli_args = ["--no-cov", "--hypothesis-seed=0", "--timeout=30", "-p", "scripts.mutation_killers"]
+# mutmut stops a run at (estimated + constant) * 15 seconds; this keeps that past the 30 a hung test gets, so the test
+# timeout fails it the way it would fail a run without mutmut.
+timeout_constant = 3
 # Starting a flag at False or an optional at None leaves one mutant, the other falsy value, which nothing can tell apart.
 do_not_mutate_patterns = ['^\s*[\w.]+(: [^=]+)? = (False|None)$']

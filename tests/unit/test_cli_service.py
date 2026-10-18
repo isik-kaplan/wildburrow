@@ -243,11 +243,13 @@ def test_install_asks_for_https_and_its_secret(
 
 def test_install_answers_are_checked(root: Path, typed: Typist, home: Path, tmp_path: Path) -> None:
     (tmp_path / "empty").write_text("# nothing\n")
-    typed("nodots", ENTER, "\b" * 6, "bad_label.com", ENTER, "\b" * 13, DOMAIN, ENTER)
-    typed(DOWN, ENTER, ENTER, "cf", ENTER, ENTER, ENTER)
-    keys = str(home / ".ssh/authorized_keys")
-    typed("\b" * len(keys), str(tmp_path / "missing"), ENTER, "\b" * len(str(tmp_path / "missing")))
-    typed(str(tmp_path / "empty"), ENTER, "\b" * len(str(tmp_path / "empty")), keys, ENTER, ENTER)
+    keys, missing, empty = str(home / ".ssh/authorized_keys"), str(tmp_path / "missing"), str(tmp_path / "empty")
+    typed(
+        *("nodots", ENTER, "\b" * 6, "bad_label.com", ENTER, "\b" * 13, DOMAIN, ENTER),
+        *(DOWN, ENTER, ENTER, "cf", ENTER, ENTER, ENTER),
+        *("\b" * len(keys), missing, ENTER, "\b" * len(missing)),
+        *(empty, ENTER, "\b" * len(empty), keys, ENTER, ENTER),
+    )
     assert cli.main(["service", "install"]) == 0
     assert settings(root)[f"{P}DOMAIN"] == DOMAIN
     assert settings(root)[f"{P}DNS_CLOUDFLARE_API_TOKEN"] == "cf"
@@ -372,7 +374,13 @@ def test_uninstall_with_yes(root: Path, commands: Commands, capsys: pytest.Captu
 
 @pytest.mark.parametrize(
     ("keys", "code", "removed", "purged"),
-    [("n", 1, False, False), ("yn", 0, True, False), ("yy", 0, True, True), ("y" + ENTER, 0, True, False)],
+    [
+        ("n", 1, False, False),
+        (ENTER, 1, False, False),
+        ("yn", 0, True, False),
+        ("yy", 0, True, True),
+        ("y" + ENTER, 0, True, False),
+    ],
 )
 def test_uninstall_asks_first(root: Path, typed: Typist, keys: str, code: int, removed: bool, purged: bool) -> None:
     install(root)
@@ -382,6 +390,12 @@ def test_uninstall_asks_first(root: Path, typed: Typist, keys: str, code: int, r
     assert cli.main(["service", "uninstall"]) == code
     assert installed(root) is not removed
     assert data.exists() is not purged
+    question = "? Stop and remove the wildburrow service?"
+    if removed:
+        purge = "? Also delete its certificates, ACME account and SSH host key?"
+        assert typed.showed(f"{question} Yes", f"{purge} {'Yes' if purged else 'No'}")
+    else:
+        assert typed.showed(f"{question} No")
 
 
 def test_uninstall_purge_skips_that_question(root: Path, typed: Typist) -> None:
@@ -576,3 +590,29 @@ def test_key_file_answers(tmp_path: Path) -> None:
     assert service_cli._keys_file(str(tmp_path / "missing")) == "no such file"
     assert service_cli._keys_file(str(tmp_path)) == "no such file"
     assert service_cli._key_lines(f"  # indented\n#\n {LAPTOP}\n{PHONE}") == 2
+
+
+def test_launchd_settings_belong_to_the_install_account(
+    tmp_path: Path, commands: Commands, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = Account("other", os.geteuid() + 1, os.getegid() + 1)
+    chowns: list[str] = []
+    monkeypatch.setattr(service.os, "chown", lambda path, uid, gid: chowns.append(f"{Path(path).name}:{uid}:{gid}"))
+    monkeypatch.setattr(service_cli, "find_manager", lambda: Launchd(tmp_path))
+    monkeypatch.setattr(service_cli, "install_account", lambda: other)
+    monkeypatch.setattr(service_cli.os, "geteuid", lambda: 0)
+    commands.replies["launchctl print system/wildburrow"] = (0, "\tstate = running\n", "")
+    owned = f"env:{other.uid}:{other.gid}"
+    assert cli.main(["service", "install", f"--domain={DOMAIN}"]) == 0
+    assert owned in chowns
+    chowns.clear()
+    assert cli.main(["service", "edit", "--http-port", "8080"]) == 0
+    assert owned in chowns
+
+
+def test_a_failing_service_manager_is_reported(
+    root: Path, commands: Commands, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commands.replies["systemctl enable --now wildburrow"] = (1, "", "Unit failed to start.")
+    assert cli.main(["service", "install", f"--domain={DOMAIN}"]) == 1
+    assert capsys.readouterr().err == "`systemctl enable --now wildburrow` failed: Unit failed to start.\n"

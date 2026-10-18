@@ -53,4 +53,7 @@ def choose(message: str, choices: Mapping[str, str], default: str) -> str:
 def confirm(message: str, default: bool = True) -> bool:
     import questionary
 
+    if not isinstance(default, bool):
+        raise TypeError(f"default must be True or False, not {default!r}")
+
     return _answer(questionary.confirm(message, default=default, **IO))

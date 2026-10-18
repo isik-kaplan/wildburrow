@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,3 +60,9 @@ class Destination(Protocol):
 
 class Tunnel(Destination, Protocol):
     identity: Identity
+
+
+def bound_port(server: Any) -> int:
+    """The port a started listener got, which is the one asked for unless that was 0."""
+    assert server is not None  # noqa: S101
+    return server.sockets[0].getsockname()[1]

@@ -491,6 +491,7 @@ def test_logout_asks_first_in_a_terminal(typed: Typist, answer: str, code: int, 
     typed(answer)
     assert cli.main(["logout"]) == code
     assert config_path().exists() is kept
+    assert typed.showed(f"? Forget s.example.com? {'No' if kept else 'Yes'}")
 
 
 def test_logout_yes_skips_the_question(typed: Typist) -> None:
@@ -565,8 +566,7 @@ def test_key_file_login_answers(tmp_path: Path) -> None:
 
 
 def test_login_port_must_be_a_number(typed: Typist) -> None:
-    typed("s", ENTER, ENTER, ENTER, "\b" * 4, "x", ENTER)
-    typed("\b", "22", ENTER, ENTER)
+    typed("s", ENTER, ENTER, ENTER, "\b" * 4, "x", ENTER, "\b", "22", ENTER, ENTER)
     assert cli.main(["login"]) == 0
     assert read_config(config_path()).ssh_port == 22
     assert client_cli._port("x") == "a port number"

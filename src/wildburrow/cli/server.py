@@ -126,6 +126,10 @@ def overlay(env: dict[str, str], settings: dict[str, str]) -> dict[str, str]:
 )
 def serve(env_file: Path | None, **options: Any) -> int:
     """Run the server."""
+    return _serve(env_file, options)
+
+
+def _serve(env_file: Path | None, options: dict[str, Any]) -> int:
     from wildburrow.config import ConfigError
     from wildburrow.server import serve
 
@@ -149,6 +153,10 @@ def serve(env_file: Path | None, **options: Any) -> int:
 @click.command("hash-password")
 def hash_password() -> int:
     """Print an argon2 hash for the password auth plugin."""
+    return _hash_password()
+
+
+def _hash_password() -> int:
     try:
         from argon2 import PasswordHasher
     except ImportError:
@@ -164,6 +172,10 @@ def hash_password() -> int:
 @click.argument("name")
 def token(name: str) -> int:
     """Create a token for the token auth plugin."""
+    return _token(name)
+
+
+def _token(name: str) -> int:
     value = new_token()
     click.echo(f"token (give this to the client): {value}")
     click.echo(f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): {name}:{digest(value)}")

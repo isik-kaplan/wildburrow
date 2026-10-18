@@ -230,6 +230,10 @@ SERVICE_SETTINGS = {
 @click.option("--force", is_flag=True, help="replace an existing install")
 def install(force: bool, **options: Any) -> int:
     """Install the server as a service and start it. Asks for each setting, given none in a terminal."""
+    return _install(force, options)
+
+
+def _install(force: bool, options: dict[str, Any]) -> int:
     manager = _manager()
     _as_root()
     if manager.installed() and not force:
@@ -247,6 +251,10 @@ def install(force: bool, **options: Any) -> int:
 @service.command(**SERVICE_SETTINGS)
 def edit(**options: Any) -> int:
     """Change the service's settings and restart it. Asks for each, given none in a terminal."""
+    return _edit(options)
+
+
+def _edit(options: dict[str, Any]) -> int:
     manager = _manager()
     _as_root()
     if not manager.installed():
@@ -263,6 +271,10 @@ def edit(**options: Any) -> int:
 @click.option("--yes", "-y", is_flag=True, help="don't ask first")
 def uninstall(purge: bool, yes: bool) -> int:
     """Stop the service and remove it."""
+    return _uninstall(purge, yes)
+
+
+def _uninstall(purge: bool, yes: bool) -> int:
     manager = _manager()
     _as_root()
     if not manager.installed():
@@ -286,6 +298,10 @@ def uninstall(purge: bool, yes: bool) -> int:
 @service.command()
 def status() -> int:
     """Show whether the service runs, and where its settings and logs are."""
+    return _status()
+
+
+def _status() -> int:
     manager = _manager()
     if not manager.installed():
         click.echo("not installed")

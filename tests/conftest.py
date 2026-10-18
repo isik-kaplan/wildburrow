@@ -149,6 +149,8 @@ async def backend() -> AsyncIterator[Backend]:
     state.port = server.sockets[0].getsockname()[1]
     async with server:
         yield state
+        # Closing waits on every connection, and one a broken client never closes would hang past the test's timeout.
+        server.close_clients()
 
 
 class SSHClient:

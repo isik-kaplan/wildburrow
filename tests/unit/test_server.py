@@ -60,6 +60,7 @@ def test_domain_is_lowercased(tmp_path: Path) -> None:
 async def test_serve_until_terminated(tmp_path: Path) -> None:
     task = asyncio.create_task(serve(env(tmp_path)))
     while not (tmp_path / "data" / "ssh_host_ed25519_key").exists():
+        assert not task.done(), task.exception()
         await asyncio.sleep(0.01)
     os.kill(os.getpid(), signal.SIGTERM)
     await asyncio.wait_for(task, 5)

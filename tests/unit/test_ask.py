@@ -69,6 +69,11 @@ def test_confirm(typed: Typist, keys: str, default: bool, expected: bool) -> Non
     assert typed.showed(f"? sure? {'Yes' if expected else 'No'}")
 
 
+def test_confirm_needs_a_yes_or_no_default(typed: Typist) -> None:
+    with pytest.raises(TypeError, match=r"^default must be True or False, not None$"):
+        ask.confirm("sure?", None)  # type: ignore[arg-type]
+
+
 def test_confirm_defaults_to_yes(typed: Typist) -> None:
     typed(ENTER)
     assert ask.confirm("sure?") is True

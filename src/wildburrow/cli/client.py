@@ -83,6 +83,10 @@ def _given(options: dict[str, Any]) -> dict[str, Any]:
 @click.argument("names", nargs=-1, required=True, metavar="NAME...")
 def connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, **options: Any) -> int:
     """Tunnel a local port (the default command): wildburrow 3000 myapp '*.foo'"""
+    return _connect(port, names, server, local_host, options)
+
+
+def _connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, options: dict[str, Any]) -> int:
     saved = read_config(config_path())
     server = server or (saved and saved.server)
     if not server:
@@ -139,6 +143,10 @@ def _ask_login(saved: ClientConfig) -> ClientConfig:
 @click.argument("server", required=False)
 def login(server: str | None, token: str | None, **options: Any) -> int:
     """Save the server and how to connect to it. Asks for each, given no SERVER in a terminal."""
+    return _login(server, token, options)
+
+
+def _login(server: str | None, token: str | None, options: dict[str, Any]) -> int:
     path = config_path()
     if server is None and token is None and not _given(options):
         if not ask.interactive():
@@ -157,6 +165,10 @@ def login(server: str | None, token: str | None, **options: Any) -> int:
 @click.option("--yes", "-y", is_flag=True, help="don't ask first")
 def logout(yes: bool) -> int:
     """Forget the saved server."""
+    return _logout(yes)
+
+
+def _logout(yes: bool) -> int:
     path = config_path()
     saved = read_config(path)
     if saved is None:

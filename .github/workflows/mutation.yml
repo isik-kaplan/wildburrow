@@ -14,16 +14,37 @@ on:
         default: false
 
 jobs:
-  mutmut:
-    # A run cancelled part way never saves the results that make the next one cheap.
-    concurrency:
-      group: mutation-${{ github.ref }}
-      cancel-in-progress: false
+  # Read from the script rather than listed here, so a shard added there is run.
+  shards:
     if: >-
       github.event_name != 'pull_request'
       || contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+      - run: uv sync --locked --all-extras
+      - id: read
+        run: echo "list=$(uv run python -m scripts.mutation shards)" >> "$GITHUB_OUTPUT"
+
+  # Sharded so a cold run takes minutes rather than over an hour, each shard with a cache of its own.
+  mutmut:
+    needs: shards
+    name: ${{ matrix.shard }} mutants
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shards.outputs.list) }}
+    # A run cancelled part way never saves the results that make the next one cheap.
+    concurrency:
+      group: mutation-${{ github.ref }}-${{ matrix.shard }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.0
@@ -33,14 +54,14 @@ jobs:
       - run: docker pull ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1
       - run: uv sync --locked --all-extras
       - id: key
-        run: echo "key=mutmut-$(uv run python -m scripts.mutation key)" >> "$GITHUB_OUTPUT"
+        run: echo "key=mutmut-${{ matrix.shard }}-$(uv run python -m scripts.mutation key)" >> "$GITHUB_OUTPUT"
       - if: ${{ !inputs.full }}
         uses: actions/cache/restore@v6.1.0
         with:
           path: mutants
           key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.key.outputs.key }}-
-      - run: uv run python -m scripts.mutation run ${{ inputs.full && '--full' || '' }}
+      - run: uv run python -m scripts.mutation run --shard ${{ matrix.shard }} ${{ inputs.full && '--full' || '' }}
       # Saved even when mutants survive or the job times out, so the next run picks up from here.
       - if: always()
         uses: actions/cache/save@v6.1.0

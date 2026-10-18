@@ -31,7 +31,11 @@ class ClientConfig:
 
     @property
     def username(self) -> str:
-        return self.user or getpass.getuser()
+        return username(self.user)
+
+
+def username(user: str) -> str:
+    return user or getpass.getuser()
 
 
 def read_config(path: Path) -> ClientConfig | None:

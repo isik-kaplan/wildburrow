@@ -9,7 +9,7 @@ from http import HTTPStatus
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import TunnelUnavailable
 from wildburrow.core.names import host_labels
-from wildburrow.core.types import Peer
+from wildburrow.core.types import Peer, bound_port
 from wildburrow.edge import proxy
 from wildburrow.streams import relay
 
@@ -94,8 +94,7 @@ class Edge:
 
     @property
     def port(self) -> int:
-        assert self._server is not None  # noqa: S101
-        return self._server.sockets[0].getsockname()[1]
+        return bound_port(self._server)
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle, self._host, self._port, limit=self._max_header_bytes)

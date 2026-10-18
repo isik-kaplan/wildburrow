@@ -6,6 +6,7 @@ from typing import Any
 import click
 
 from wildburrow.cli import client, server, service
+from wildburrow.service import ServiceError
 
 PROG = "wildburrow"
 CONTEXT = {"help_option_names": ["-h", "--help"], "max_content_width": 100}
@@ -44,6 +45,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except click.ClickException as exc:
         exc.show()
         return exc.exit_code
+    except ServiceError as exc:
+        click.echo(str(exc), err=True)
+        return 1
     except click.Abort, KeyboardInterrupt, EOFError:
         click.echo("aborted", err=True)
         return 1

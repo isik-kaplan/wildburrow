@@ -4,9 +4,11 @@ mutmut re-tests a mutant when its function changes, but not when a test changes:
 it earned, and a new test never runs against an old survivor. `invalidate` clears exactly those verdicts, so a
 restored `mutants/` directory answers for the code and the tests as they are now.
 
-    python -m scripts.mutation run           # re-test what changed since the cached run
-    python -m scripts.mutation run --full    # re-test everything
-    python -m scripts.mutation key           # the cache key for `mutants/`
+    python -m scripts.mutation run                   # re-test what changed since the cached run
+    python -m scripts.mutation run --full            # re-test everything
+    python -m scripts.mutation run --shard commands  # only the mutants of one shard
+    python -m scripts.mutation shards                # the shard names
+    python -m scripts.mutation key                   # the cache key for `mutants/`
 """
 
 import argparse
@@ -21,12 +23,10 @@ import sys
 import tomllib
 from pathlib import Path
 
-from scripts.mutation_killers import MARKER, RECORD
+from scripts.mutation_killers import MARKER, RECORD, STATS, killers
 
 ROOT = Path(__file__).resolve().parent.parent
 TREE = "mutants"
-STATS = "mutmut-stats.json"
-CICD_STATS = "mutmut-cicd-stats.json"
 BASELINE = ".test-hashes.json"
 WATCHED = ("src", "tests")
 COPIED = ("src", "tests", "scripts")
@@ -34,12 +34,27 @@ META = ".meta"
 SIDECARS = (META, ".spans")
 TOOLING = ("uv.lock", "scripts/mutation.py", "scripts/mutation_killers.py")
 KILLS = frozenset({1, 3})
-# mutmut's timeout codes. A hang that also hangs alone is the tests never finishing, so it is settled like a kill.
-HUNG = frozenset({24, -24, 36, 152, 255})
-DECIDED = KILLS | HUNG
+# mutmut stopping the tests itself: a hang that no test turned into a failure, which a run without mutmut never ends.
+HUNG = dict.fromkeys((24, -24, 36, 152, 255), "hung")
 TYPE_CHECKED = 37
 # macOS crashes a forked child that looks up the system proxy, which every mutant runs in.
 DARWIN_ENV = {"no_proxy": "*"}
+# Split by what the code is for rather than by size, so a failing shard says where to look.
+SHARDS = {
+    "commands": ("wildburrow.cli.",),
+    "service": ("wildburrow.service.", "wildburrow.envfile."),
+    "client": ("wildburrow.client.",),
+    "transports": ("wildburrow.transports.",),
+    "edge": (
+        "wildburrow.edge.", "wildburrow.server.", "wildburrow.core.", "wildburrow.protocol.", "wildburrow.streams.",
+        "wildburrow.plugins.", "wildburrow.config.",
+    ),
+    "certs": ("wildburrow.certs.", "wildburrow.dns."),
+    "auth": ("wildburrow.auth.",),
+}  # fmt: skip
+EVERY_MUTANT = ("",)
+NO_TESTS = 33
+STATUS = {None: "not checked", 0: "survived", NO_TESTS: "no tests"} | HUNG
 
 
 def digest(data: bytes) -> str:
@@ -133,15 +148,8 @@ def stale_tests(changed: set[str], stats: dict, sources: bool) -> set[str] | Non
     return stale
 
 
-def killers(record: Path) -> dict[str, str]:
-    if not record.exists():
-        return {}
-    entries = (json.loads(line) for line in record.read_text().splitlines() if line)
-    return {entry["mutant"]: entry["killer"] for entry in entries}
-
-
 def verdict_is_stale(key: str, code: int, stale: set[str] | None, traced: dict, killed_by: dict[str, str]) -> bool:
-    if stale is None or code not in DECIDED:
+    if stale is None or code not in KILLS:
         return True
     if key in killed_by:
         return killed_by[key] in stale
@@ -165,6 +173,14 @@ def clear_verdicts(tree: Path, stats: dict, stale: set[str] | None) -> int:
             meta_path.write_text(json.dumps(meta, indent=4))
             cleared += len(keys)
     return cleared
+
+
+def forget(tree: Path, keys: set[str]) -> None:
+    for meta_path in sorted(tree.rglob(f"*.py{META}")):
+        meta = json.loads(meta_path.read_text())
+        if found := keys & meta["exit_code_by_key"].keys():
+            meta["exit_code_by_key"].update(dict.fromkeys(found))
+            meta_path.write_text(json.dumps(meta, indent=4))
 
 
 def drop_traces(stats_path: Path, stats: dict, stale: set[str] | None) -> int:
@@ -226,17 +242,18 @@ def mutmut(root: Path, *args: str, check: bool = True) -> None:
     subprocess.run([sys.executable, "-m", "mutmut", *args], cwd=root, env=env, check=check)  # noqa: S603
 
 
-def check(root: Path) -> int:
-    counts = json.loads((root / TREE / CICD_STATS).read_text())
-    print(f"{counts['killed']} of {counts['total']} mutants killed, {counts['timeout']} hung")
-    # A hang that survived running alone is the tests never finishing, which is the mutant caught.
-    if counts["total"] and counts["killed"] + counts["timeout"] == counts["total"]:
-        return 0
-    mutmut(root, "results", check=False)
-    return 1
+def check(root: Path, prefixes: tuple[str, ...] = EVERY_MUTANT) -> int:
+    found = {key: code for key, code in verdicts(root / TREE).items() if key.startswith(prefixes)}
+    killed = sum(code in KILLS for code in found.values())
+    print(f"{killed} of {len(found)} mutants killed")
+    missed = {key: code for key, code in found.items() if code not in KILLS}
+    for key, code in missed.items():
+        print(f"    {key}: {STATUS.get(code, f'exit code {code}')}")
+    return 0 if found and not missed else 1
 
 
-def run(root: Path, full: bool) -> int:
+def run(root: Path, full: bool, shard: str | None) -> int:
+    prefixes = SHARDS[shard] if shard else EVERY_MUTANT
     if full:
         shutil.rmtree(root / TREE, ignore_errors=True)
     print(f"{prune(root)} copies of removed files dropped", flush=True)
@@ -245,29 +262,44 @@ def run(root: Path, full: bool) -> int:
         flush=True,
     )
     settled = {key for key, code in verdicts(root / TREE).items() if code is not None}
-    mutmut(root, "run", "--max-children", str(os.cpu_count()), check=False)
+    selection = [prefix + "*" for prefix in prefixes if prefix]
+    mutmut(root, "run", "--max-children", str(os.cpu_count()), *selection, check=False)
     # Under a full load a slow test can read as a hang or a hang as a pass, so whatever didn't die runs again alone.
-    tested = {key: code for key, code in verdicts(root / TREE).items() if key not in settled}
+    tested = {
+        key: code for key, code in verdicts(root / TREE).items() if key not in settled and key.startswith(prefixes)
+    }
+    if untraced := [key for key, code in tested.items() if code == NO_TESTS]:
+        # A function the map never traced has no tests to run, and only tracing everything again finds them.
+        stats_path = root / TREE / STATS
+        drop_traces(stats_path, json.loads(stats_path.read_text()), None)
+        forget(root / TREE, set(untraced))
+        mutmut(root, "run", "--max-children", str(os.cpu_count()), *untraced, check=False)
+        tested.update((key, code) for key, code in verdicts(root / TREE).items() if key in untraced)
     if alive := [key for key, code in tested.items() if code not in KILLS and code != TYPE_CHECKED]:
         mutmut(root, "run", "--max-children", "1", *alive, check=False)
-    mutmut(root, "export-cicd-stats")
-    return check(root)
+    return check(root, prefixes)
 
 
 def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(prog="python -m scripts.mutation", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("key", help="print the cache key for mutants/")
-    commands.add_parser("check", help="fail unless every mutant was killed")
+    commands.add_parser("shards", help="print the shard names as JSON")
+    check_parser = commands.add_parser("check", help="fail unless every mutant was killed")
     run_parser = commands.add_parser("run", help="re-test what changed, then check")
     run_parser.add_argument("--full", action="store_true", help="discard mutants/ and re-test everything")
+    for sub in (check_parser, run_parser):
+        sub.add_argument("--shard", choices=list(SHARDS), help="only the mutants of this shard")
     args = parser.parse_args(argv)
     if args.command == "key":
         print(cache_key(root))
         return 0
+    if args.command == "shards":
+        print(json.dumps(list(SHARDS)))
+        return 0
     if args.command == "check":
-        return check(root)
-    return run(root, args.full)
+        return check(root, SHARDS[args.shard] if args.shard else EVERY_MUTANT)
+    return run(root, args.full, args.shard)
 
 
 if __name__ == "__main__":

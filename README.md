@@ -184,7 +184,13 @@ run in `mutants/`, both source and tests; CI keeps that directory cached between
 ```sh
 uv run python -m scripts.mutation run          # re-test what changed
 uv run python -m scripts.mutation run --full   # re-test everything
+uv run python -m scripts.mutation run --shard commands   # one shard: commands, service, client, ...
 ```
+
+CI runs each shard as a job of its own with its own cache, so a cold run takes minutes and a red shard says where
+to look. There is one pass: each mutant runs against the tests traced to it, the test that killed it last time and
+those that killed its siblings first, and a survivor is a test to write. mutmut leaves decorated functions alone,
+so a decorated function only hands off to a plain one.
 
 Every push to `master` runs the tests and the mutation run, then publishes to PyPI and `ghcr.io` when the version in
 `pyproject.toml` isn't on PyPI yet.

@@ -10,7 +10,7 @@ from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.names import Name
 from wildburrow.core.registry import Registry
-from wildburrow.core.types import Identity, PasswordCredential, Peer, PublicKeyCredential
+from wildburrow.core.types import Identity, PasswordCredential, Peer, PublicKeyCredential, bound_port
 
 log = logging.getLogger(__name__)
 
@@ -167,8 +167,7 @@ class SSHTransport:
 
     @property
     def port(self) -> int:
-        assert self._server is not None  # noqa: S101
-        return self._server.sockets[0].getsockname()[1]
+        return bound_port(self._server)
 
     async def start(self, ctx: ServerContext) -> None:
         # asyncssh expands ~ for every connection, which fails for users without a home (systemd DynamicUser).
