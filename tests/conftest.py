@@ -1,8 +1,11 @@
 import asyncio
+import faulthandler
 import os
 import socket
 import subprocess
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+import sys
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +20,26 @@ from wildburrow.server import Server
 DOMAIN = "tunnel.test"
 PASSWORD = "correct horse battery staple"
 TIMEOUT = 10
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Generator[None]:
+    """Ends the run when a teardown hangs, which the test timeout stops watching for once a test has failed."""
+
+    def hung() -> None:
+        item.config.pluginmanager.getplugin("capturemanager").suspend_global_capture(in_=True)
+        sys.stderr.write(f"\n{item.nodeid} still tearing down after {limit:g}s\n")
+        faulthandler.dump_traceback(sys.stderr, all_threads=True)
+        os._exit(1)
+
+    limit = float(item.config.getoption("timeout") or item.config.getini("timeout"))
+    timer = threading.Timer(limit, hung)
+    timer.daemon = True
+    timer.start()
+    try:
+        return (yield)
+    finally:
+        timer.cancel()
 
 
 @dataclass(frozen=True)
