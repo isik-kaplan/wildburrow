@@ -1,5 +1,6 @@
 import builtins
 import dataclasses
+import functools
 import logging
 import re
 import runpy
@@ -352,9 +353,13 @@ def test_token_command(capsys: pytest.CaptureFixture[str]) -> None:
     assert server_line == f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): ci:{digest(token)}"
 
 
-def test_serve_logs_with_timestamps(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_serve_logs_with_timestamps(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(logging.root, "handlers", [])
-    monkeypatch.setattr(logging.root, "level", logging.WARNING)
+    # Through setLevel, since loggers cache what an earlier level let through.
+    request.addfinalizer(functools.partial(logging.root.setLevel, logging.root.level))
+    logging.root.setLevel(logging.WARNING)
 
     async def fake_serve(env) -> None:
         logging.getLogger("wildburrow.test").info("hello")
