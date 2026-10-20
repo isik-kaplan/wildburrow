@@ -1,11 +1,13 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 import asyncssh
 
 from wildburrow import protocol
+from wildburrow.config import SHOWN
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.names import Name
@@ -22,6 +24,7 @@ UNNAMED = {"", "localhost"}
 class SSHSettings:
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 2222
+    public_port: int = field(default=0, metadata={SHOWN: "same as PORT"})
     login_timeout: int = 30
     keepalive_interval: int = 30
 
@@ -159,6 +162,7 @@ async def _session(process: asyncssh.SSHServerProcess) -> None:
 
 class SSHTransport:
     Settings = SSHSettings
+    methods: ClassVar[dict[str, type]] = {"key": PublicKeyCredential, "password": PasswordCredential}
 
     def __init__(self, settings: SSHSettings) -> None:
         self.settings = settings
@@ -168,6 +172,9 @@ class SSHTransport:
     @property
     def port(self) -> int:
         return bound_port(self._server)
+
+    def published(self) -> dict[str, int]:
+        return {"port": self.settings.public_port or self.port}
 
     async def start(self, ctx: ServerContext) -> None:
         # asyncssh expands ~ for every connection, which fails for users without a home (systemd DynamicUser).

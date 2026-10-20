@@ -12,7 +12,7 @@ from scripts import mutation, mutation_killers
 
 PYPROJECT = """
 [tool.mutmut]
-source_paths = ["src/pkg"]
+source_paths = ["pkg"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -53,7 +53,7 @@ def root(tmp_path: Path) -> Path:
     write(tmp_path, "pyproject.toml", PYPROJECT)
     for name in mutation.TOOLING:
         write(tmp_path, name, name)
-    write(tmp_path, "src/pkg/mod.py", "def function():\n    return 1\n")
+    write(tmp_path, "pkg/mod.py", "def function():\n    return 1\n")
     write(tmp_path, "tests/test_mod.py", TEST_MODULE)
     write(tmp_path, "tests/test_other.py", "def test_other():\n    pass\n")
     write(tmp_path, "tests/conftest.py", "")
@@ -74,7 +74,7 @@ def test_the_cache_key_follows_settings_and_tooling_but_not_formatting(root: Pat
     key = mutation.cache_key(root)
     write(root, "pyproject.toml", "# a comment\n" + PYPROJECT)
     assert mutation.cache_key(root) == key
-    write(root, "pyproject.toml", PYPROJECT.replace("src/pkg", "src"))
+    write(root, "pyproject.toml", PYPROJECT.replace("pkg", "lib"))
     assert mutation.cache_key(root) != key
     write(root, "pyproject.toml", PYPROJECT)
     write(root, "uv.lock", "changed")
@@ -84,7 +84,7 @@ def test_the_cache_key_follows_settings_and_tooling_but_not_formatting(root: Pat
 def test_test_modules_are_hashed_per_test(root: Path) -> None:
     hashes = mutation.file_hashes(root)
     assert set(hashes) == {
-        "src/pkg/mod.py",
+        "pkg/mod.py",
         "tests/conftest.py",
         "tests/support.py",
         "tests/test_mod.py",
@@ -126,9 +126,9 @@ def test_changes_are_read_against_the_baseline(root: Path) -> None:
         ({"tests/conftest.py"}, False, {ONE, TWO, OTHER}),
         ({"tests/e2e/conftest.py"}, False, set()),
         ({"tests/support.py"}, False, None),
-        ({"src/pkg/mod.py"}, False, set()),
-        ({"src/pkg/mod.py"}, True, {ONE}),
-        ({"src/pkg/new.py"}, True, None),
+        ({"pkg/mod.py"}, False, set()),
+        ({"pkg/mod.py"}, True, {ONE}),
+        ({"pkg/new.py"}, True, None),
     ],
 )
 def test_stale_tests(changed: set[str], sources: bool, expected: set[str] | None) -> None:
@@ -145,8 +145,8 @@ def test_invalidate_clears_what_a_changed_test_decided(root: Path) -> None:
     mutation.invalidate(root)
     write(root, f"{mutation.TREE}/{mutation_killers.STATS}", json.dumps(stats(**{FUNCTION: [ONE, TWO]})))
     verdicts = {mutant(1): 1, mutant(2): 1, mutant(3): 3, mutant(4): 0, mutant(5): 37, mutant(6): None}
-    meta = write(root, f"{mutation.TREE}/src/pkg/mod.py.meta", json.dumps({"exit_code_by_key": verdicts}))
-    write(root, f"{mutation.TREE}/src/pkg/settled.py.meta", json.dumps({"exit_code_by_key": {"settled": 37}}))
+    meta = write(root, f"{mutation.TREE}/pkg/mod.py.meta", json.dumps({"exit_code_by_key": verdicts}))
+    write(root, f"{mutation.TREE}/pkg/settled.py.meta", json.dumps({"exit_code_by_key": {"settled": 37}}))
     record = [{"mutant": mutant(1), "killer": TWO}, {"mutant": mutant(2), "killer": ONE}]
     write(root, f"{mutation.TREE}/{mutation_killers.RECORD}", "\n".join(json.dumps(line) for line in record) + "\n")
     write(root, "tests/test_mod.py", TEST_MODULE.replace("== 3", "== 4"))
@@ -169,7 +169,7 @@ def test_invalidate_clears_what_a_changed_test_decided(root: Path) -> None:
 def test_an_untraceable_change_clears_everything(root: Path) -> None:
     mutation.invalidate(root)
     write(root, f"{mutation.TREE}/{mutation_killers.STATS}", json.dumps(stats(**{FUNCTION: [ONE]})))
-    meta = write(root, f"{mutation.TREE}/src/pkg/mod.py.meta", json.dumps({"exit_code_by_key": {mutant(1): 1}}))
+    meta = write(root, f"{mutation.TREE}/pkg/mod.py.meta", json.dumps({"exit_code_by_key": {mutant(1): 1}}))
     write(root, "tests/support.py", "CHANGED = True\n")
     assert mutation.invalidate(root) == {"changed": 1, "verdicts": 1, "traces": 1}
     assert json.loads(meta.read_text())["exit_code_by_key"] == {mutant(1): None}
@@ -181,16 +181,16 @@ def test_an_untraceable_change_clears_everything(root: Path) -> None:
 
 def test_prune_drops_copies_of_removed_files(root: Path) -> None:
     kept = [
-        write(root, f"{mutation.TREE}/src/pkg/mod.py", ""),
-        write(root, f"{mutation.TREE}/src/pkg/mod.py.meta", ""),
-        write(root, f"{mutation.TREE}/src/pkg/mod.py.spans", ""),
+        write(root, f"{mutation.TREE}/pkg/mod.py", ""),
+        write(root, f"{mutation.TREE}/pkg/mod.py.meta", ""),
+        write(root, f"{mutation.TREE}/pkg/mod.py.spans", ""),
         write(root, f"{mutation.TREE}/tests/__pycache__/gone.pyc", ""),
         write(root, f"{mutation.TREE}/{mutation_killers.STATS}", ""),
     ]
     gone = [
-        write(root, f"{mutation.TREE}/src/pkg/gone.py", ""),
-        write(root, f"{mutation.TREE}/src/pkg/gone.py.meta", ""),
-        write(root, f"{mutation.TREE}/src/pkg/gone.py.spans", ""),
+        write(root, f"{mutation.TREE}/pkg/gone.py", ""),
+        write(root, f"{mutation.TREE}/pkg/gone.py.meta", ""),
+        write(root, f"{mutation.TREE}/pkg/gone.py.spans", ""),
         write(root, f"{mutation.TREE}/tests/test_gone.py", ""),
         write(root, f"{mutation.TREE}/scripts/gone.py", ""),
     ]
@@ -209,7 +209,7 @@ class FakeMutmut:
         assert cwd == self.root
         self.calls.append((command[3:], env))
         if self.verdicts is not None:
-            write(self.root, f"{mutation.TREE}/src/pkg/mod.py.meta", json.dumps({"exit_code_by_key": self.verdicts}))
+            write(self.root, f"{mutation.TREE}/pkg/mod.py.meta", json.dumps({"exit_code_by_key": self.verdicts}))
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ def fake_mutmut(root: Path, monkeypatch: pytest.MonkeyPatch) -> FakeMutmut:
 
 
 def verdicts_of(root: Path, found: dict[str, int | None]) -> None:
-    write(root, f"{mutation.TREE}/src/pkg/mod.py.meta", json.dumps({"exit_code_by_key": found}))
+    write(root, f"{mutation.TREE}/pkg/mod.py.meta", json.dumps({"exit_code_by_key": found}))
 
 
 @pytest.mark.parametrize(
@@ -294,10 +294,9 @@ def test_shards_command(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_every_module_is_in_exactly_one_shard() -> None:
-    source = mutation.ROOT / "src"
     modules = [
-        ".".join(path.relative_to(source).with_suffix("").parts).removesuffix(".__init__") + "."
-        for path in source.rglob("*.py")
+        ".".join(path.relative_to(mutation.ROOT).with_suffix("").parts).removesuffix(".__init__") + "."
+        for path in (mutation.ROOT / "wildburrow").rglob("*.py")
     ]
     prefixes = [prefix for shard in mutation.SHARDS.values() for prefix in shard]
     assert {module: sum(module.startswith(prefix) for prefix in prefixes) for module in modules} == dict.fromkeys(
@@ -393,7 +392,7 @@ def test_untested_mutants_get_one_full_re_trace(root: Path, fake_mutmut, monkeyp
             {ONE: 1.0} if len(calls) == 1 else {}
         )
         if len(calls) == 2:
-            assert json.loads((root / mutation.TREE / "src/pkg/mod.py.meta").read_text())["exit_code_by_key"] == {
+            assert json.loads((root / mutation.TREE / "pkg/mod.py.meta").read_text())["exit_code_by_key"] == {
                 mutant(1): None, mutant(2): 1,
             }  # fmt: skip
         verdicts_of(root, next(runs))
@@ -405,19 +404,17 @@ def test_untested_mutants_get_one_full_re_trace(root: Path, fake_mutmut, monkeyp
 
 def test_forget_clears_only_the_named_verdicts(root: Path) -> None:
     verdicts_of(root, {mutant(1): 1, mutant(2): 0})
-    write(
-        root, f"{mutation.TREE}/src/pkg/other.py.meta", json.dumps({"exit_code_by_key": {"pkg.other.x_g__mutmut_1": 1}})
-    )
-    before = (root / mutation.TREE / "src/pkg/other.py.meta").read_text()
+    write(root, f"{mutation.TREE}/pkg/other.py.meta", json.dumps({"exit_code_by_key": {"pkg.other.x_g__mutmut_1": 1}}))
+    before = (root / mutation.TREE / "pkg/other.py.meta").read_text()
     mutation.forget(root / mutation.TREE, {mutant(2)})
     assert mutation.verdicts(root / mutation.TREE) == {mutant(1): 1, mutant(2): None, "pkg.other.x_g__mutmut_1": 1}
-    assert (root / mutation.TREE / "src/pkg/other.py.meta").read_text() == before
+    assert (root / mutation.TREE / "pkg/other.py.meta").read_text() == before
 
 
 def test_decorated_functions_only_hand_off() -> None:
     # mutmut mutates no decorated function, so one that does anything itself is code no mutant ever measures.
     unmeasured = []
-    for path in sorted((mutation.ROOT / "src").rglob("*.py")):
+    for path in sorted((mutation.ROOT / "wildburrow").rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue

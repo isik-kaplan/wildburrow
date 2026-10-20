@@ -29,6 +29,8 @@ class ServerContext:
     registry: Registry = field(default_factory=Registry)
     certs: CertManager | None = None
     root: Destination | None = None
+    # What clients are told about logging in, published once the transports know their ports.
+    info: bytes = b"{}"
 
     async def bind(self, raw: str, tunnel: Tunnel, notify: Callable[[str], None]) -> Name:
         name = parse_name(raw, self.domain, self.max_depth)

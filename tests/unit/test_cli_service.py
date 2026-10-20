@@ -127,7 +127,10 @@ def test_install_without_keys_of_its_own(root: Path, home: Path, capsys: pytest.
     )
     assert (
         cli.main(
-            ["service", "install", f"--domain={DOMAIN}", "--auth", "token", "--auth-token-hashes", "a:" + "0" * 64]
+            [
+                *("service", "install", f"--domain={DOMAIN}", "--transports", "websocket"),
+                *("--auth", "token", "--auth-token-hashes", "a:" + "0" * 64),
+            ]
         )
         == 0
     )
@@ -334,7 +337,7 @@ def test_edit_keeps_an_unusual_transport_on_offer(root: Path, typed: Typist) -> 
 
 
 def test_edit_asks_no_keys_without_key_auth(root: Path, typed: Typist) -> None:
-    install(root, "--auth=token", "--auth-token-hashes=" + "a:" + "0" * 64)
+    install(root, "--transports=websocket", "--auth=token", "--auth-token-hashes=" + "a:" + "0" * 64)
     typed(ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert KEYS not in settings(root)

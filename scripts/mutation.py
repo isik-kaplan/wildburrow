@@ -28,8 +28,7 @@ from scripts.mutation_killers import MARKER, RECORD, STATS, killers
 ROOT = Path(__file__).resolve().parent.parent
 TREE = "mutants"
 BASELINE = ".test-hashes.json"
-WATCHED = ("src", "tests")
-COPIED = ("src", "tests", "scripts")
+TESTS = "tests"
 META = ".meta"
 SIDECARS = (META, ".spans")
 TOOLING = ("uv.lock", "scripts/mutation.py", "scripts/mutation_killers.py")
@@ -72,8 +71,12 @@ def cache_key(root: Path) -> str:
     return digest(json.dumps(material, sort_keys=True).encode())
 
 
+def source_paths(root: Path) -> list[str]:
+    return tomllib.loads((root / "pyproject.toml").read_text())["tool"]["mutmut"]["source_paths"]
+
+
 def is_test_module(name: str) -> bool:
-    return name.startswith("tests/") and name.rpartition("/")[2].startswith("test_") and name.endswith(".py")
+    return name.startswith(f"{TESTS}/") and name.rpartition("/")[2].startswith("test_") and name.endswith(".py")
 
 
 def is_test_unit(node: ast.stmt) -> bool:
@@ -96,7 +99,7 @@ def test_unit_hashes(name: str, source: bytes) -> dict[str, str]:
 
 def file_hashes(root: Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
-    for top in WATCHED:
+    for top in (*source_paths(root), TESTS):
         for path in sorted((root / top).rglob("*")):
             if path.is_file() and "__pycache__" not in path.parts:
                 name = path.relative_to(root).as_posix()
@@ -122,7 +125,7 @@ def unit_of(test: str) -> str:
 
 
 def module_prefix(name: str) -> str:
-    return name.removeprefix("src/").removesuffix(".py").replace("/", ".") + "."
+    return name.removesuffix(".py").replace("/", ".") + "."
 
 
 def stale_tests(changed: set[str], stats: dict, sources: bool) -> set[str] | None:
@@ -131,7 +134,7 @@ def stale_tests(changed: set[str], stats: dict, sources: bool) -> set[str] | Non
     stale: set[str] = set()
     for key in changed:
         name, _, unit = key.partition("::")
-        if name.startswith("src/"):
+        if not name.startswith(f"{TESTS}/"):
             # mutmut clears the verdicts of a changed function itself, but only tracing finds a function it gained.
             if sources:
                 prefix = module_prefix(name)
@@ -217,7 +220,7 @@ def prune(root: Path) -> int:
     # mutmut refreshes its copies but never deletes one, so a removed test would keep running.
     tree = root / TREE
     removed = 0
-    for top in COPIED:
+    for top in (*source_paths(root), TESTS, "scripts"):
         for copy in sorted((tree / top).rglob("*")):
             if copy.is_file() and "__pycache__" not in copy.parts:
                 relative = copy.relative_to(tree)

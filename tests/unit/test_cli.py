@@ -15,11 +15,12 @@ from argon2 import PasswordHasher
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from tests.unit.conftest import CTRL_C, DOWN, ENTER, Typist
+from tests.unit.conftest import CTRL_C, DOWN, ENTER, LoginServer, Typist
 from wildburrow import cli, plugins
 from wildburrow.auth.token import digest
 from wildburrow.cli import client as client_cli
 from wildburrow.cli import server as server_cli
+from wildburrow.client import discovery
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
 from wildburrow.client.ssh import KEEPALIVE, ssh_command
 from wildburrow.config import PREFIX
@@ -437,6 +438,138 @@ def test_login_offers_only_what_the_transport_can_do(typed: Typist) -> None:
     typed(ENTER, DOWN, ENTER, DOWN, ENTER, ENTER)
     assert cli.main(["login"]) == 0
     assert read_config(config_path()) == ClientConfig("s.example.com", auth="password", token="t")
+
+
+WEBSOCKET_ONLY = discovery.Published({"websocket": ("key", "token")}, "websocket", "key", None)
+BOTH = discovery.Published({"ssh": ("password", "key"), "websocket": ("token", "key")}, "websocket", "token", 2200)
+
+
+def test_login_starts_from_what_the_server_publishes(
+    login_server: LoginServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    login_server.published = WEBSOCKET_ONLY
+    assert cli.main(["login", "tunnel.example.com"]) == 0
+    assert read_config(config_path()) == ClientConfig("tunnel.example.com", transport="websocket", auth="key")
+    assert login_server.asked == ["https://tunnel.example.com"]
+    assert capsys.readouterr().err == ""
+
+
+def test_login_asks_at_the_url_it_was_given(login_server: LoginServer) -> None:
+    login_server.published = WEBSOCKET_ONLY
+    assert cli.main(["login", "s", "--url", "http://127.0.0.1:8080"]) == 0
+    assert login_server.asked == ["http://127.0.0.1:8080"]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], {"transport": "websocket", "auth": "token", "ssh_port": 2200}),
+        (["--transport", "ssh"], {"transport": "ssh", "auth": "password", "ssh_port": 2200}),
+        (["--auth", "key"], {"transport": "websocket", "auth": "key", "ssh_port": 2200}),
+        (["--transport", "ssh", "--ssh-port", "22"], {"transport": "ssh", "auth": "password", "ssh_port": 22}),
+    ],
+)
+def test_login_fills_in_what_was_not_given(login_server: LoginServer, args: list[str], expected: dict) -> None:
+    login_server.published = BOTH
+    assert cli.main(["login", "s", "--token", "t", *args]) == 0
+    assert read_config(config_path()) == ClientConfig("s", token="t", **expected)
+
+
+def test_login_given_both_asks_the_server_nothing(login_server: LoginServer) -> None:
+    login_server.published = BOTH
+    assert cli.main(["login", "s", "--transport", "ssh", "--auth", "key"]) == 0
+    assert login_server.asked == []
+    assert read_config(config_path()) == ClientConfig("s", transport="ssh", auth="key")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--transport", "ssh"], "s doesn't take --transport ssh; it offers: websocket\n"),
+        (["--auth", "password"], "s doesn't take --auth password over websocket; it takes: key, token\n"),
+    ],
+)
+def test_login_refuses_what_the_server_does_not_offer(
+    login_server: LoginServer, capsys: pytest.CaptureFixture[str], args: list[str], message: str
+) -> None:
+    login_server.published = WEBSOCKET_ONLY
+    assert cli.main(["login", "s", *args]) == 2
+    assert capsys.readouterr().err == message
+    assert read_config(config_path()) is None
+
+
+def test_login_to_a_server_that_publishes_nothing(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["login", "s"]) == 0
+    assert read_config(config_path()) == ClientConfig("s")
+    assert capsys.readouterr().err == "s doesn't say how to log in; starting from the built-in defaults\n"
+
+
+def test_login_without_a_token_says_where_one_goes(
+    login_server: LoginServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    login_server.published = discovery.Published({"websocket": ("token",)}, "websocket", "token", None)
+    assert cli.main(["login", "s"]) == 0
+    assert capsys.readouterr().err == f"no token saved: pass --token, or set {PREFIX}TOKEN when connecting\n"
+
+
+def test_login_offers_only_what_the_server_publishes(
+    typed: Typist, login_server: LoginServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    login_server.published = WEBSOCKET_ONLY
+    typed("tunnel.example.com", ENTER, DOWN, ENTER, "secret", ENTER)
+    assert cli.main(["login"]) == 0
+    assert read_config(config_path()) == ClientConfig(
+        "tunnel.example.com", transport="websocket", auth="token", token="secret"
+    )
+    assert capsys.readouterr().out.startswith("Connect over: websocket, the only one the server offers\n")
+    assert typed.showed(
+        "? Server tunnel.example.com",
+        "? Log in with token: one made with `wildburrow token NAME` on the server",
+        "? Token ******",
+    )
+    assert not typed.showed("? Connect over")
+
+
+def test_login_asks_nothing_the_server_leaves_no_choice_in(
+    typed: Typist, login_server: LoginServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    login_server.published = discovery.Published({"websocket": ("token",)}, "websocket", "token", None)
+    typed("s", ENTER, "secret", ENTER)
+    assert cli.main(["login"]) == 0
+    assert read_config(config_path()) == ClientConfig("s", transport="websocket", auth="token", token="secret")
+    assert capsys.readouterr().out.startswith(
+        "Connect over: websocket, the only one the server offers\nLog in with: token, the only one the server offers\n"
+    )
+
+
+def test_login_to_another_server_starts_from_its_defaults(typed: Typist, login_server: LoginServer) -> None:
+    write_config(config_path(), ClientConfig("old.example.com", transport="ssh", auth="password"))
+    login_server.published = BOTH
+    typed("\b" * 15, "new.example.com", ENTER, ENTER, ENTER, "t", ENTER)
+    assert cli.main(["login"]) == 0
+    assert login_server.asked == ["https://new.example.com"]
+    assert read_config(config_path()) == ClientConfig("new.example.com", transport="websocket", auth="token", token="t")
+
+
+def test_login_to_the_same_server_keeps_the_earlier_choice(typed: Typist, login_server: LoginServer) -> None:
+    write_config(config_path(), ClientConfig("s", 2201, transport="ssh", auth="password"))
+    login_server.published = BOTH
+    typed(ENTER, ENTER, ENTER, ENTER)
+    assert cli.main(["login"]) == 0
+    assert read_config(config_path()) == ClientConfig("s", 2200, transport="ssh", auth="password")
+    assert typed.showed(
+        "? Connect over ssh: your ssh binary, on port 2222",
+        "? Log in with password: asked each time you connect",
+        "? SSH port 2200",
+    )
+
+
+def test_login_to_the_same_server_moves_off_what_it_stopped_offering(typed: Typist, login_server: LoginServer) -> None:
+    write_config(config_path(), ClientConfig("s", transport="ssh", auth="password"))
+    login_server.published = WEBSOCKET_ONLY
+    typed(ENTER, ENTER, ENTER)
+    assert cli.main(["login"]) == 0
+    assert read_config(config_path()) == ClientConfig("s", transport="websocket", auth="key")
 
 
 def test_login_answers_are_checked(typed: Typist) -> None:

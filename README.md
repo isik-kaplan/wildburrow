@@ -28,8 +28,12 @@ wildburrow logout             # forgets the saved server
 ```
 
 `login` keeps its answers in `~/.config/wildburrow/config.toml` until you log in again or out; nothing in it expires,
-and every tunnel logs in afresh. Given options, `wildburrow login tunnel.example.com --transport websocket`, it asks
-nothing and saves what you passed.
+and every tunnel logs in afresh. Given options, `wildburrow login tunnel.example.com`, it asks nothing and saves them.
+
+The server publishes how to log in to it, so `wildburrow login tunnel.example.com` is all a client needs: it starts
+from the server's transport and auth method, offers only what the server runs, and fills in its SSH port. Options you
+pass win, and one the server doesn't offer is refused with what it does. An older server that publishes nothing gets
+the built-in defaults.
 
 Two transports are available:
 
@@ -136,6 +140,7 @@ no `--data-dir`; its service manager decides where its data goes.
 | `WILDBURROW_DOMAIN` | required | Base domain tunnels live under |
 | `WILDBURROW_TRANSPORTS` | `ssh` | Transport plugins: `ssh`, `websocket` |
 | `WILDBURROW_AUTH` | `key` | Auth plugins, tried in order: `key`, `password`, `token` |
+| `WILDBURROW_CLIENT_TRANSPORT` / `_CLIENT_AUTH` | first that works | What `wildburrow login` starts from; by default the first transport in `TRANSPORTS` any auth plugin works over, and its first method in `AUTH` order |
 | `WILDBURROW_DATA_DIR` | `~/.local/state/wildburrow` | Host key, certificates, ACME account; `/data` in the image |
 | `WILDBURROW_HTTP_HOST` / `_HTTP_PORT` | `0.0.0.0` / `80` | Plain HTTP listener |
 | `WILDBURROW_HTTPS_HOST` / `_HTTPS_PORT` | `0.0.0.0` / `443` | TLS listener, when `WILDBURROW_DNS` is set |
@@ -151,6 +156,7 @@ no `--data-dir`; its service manager decides where its data goes.
 | `WILDBURROW_ACME_PROPAGATION_SECONDS` | `30` | Wait after publishing a challenge record |
 | `WILDBURROW_RENEW_BEFORE_DAYS` | `30` | Renew certificates in use this close to expiry |
 | `WILDBURROW_SSH_PORT` | `2222` | SSH transport port (`_HOST`, `_LOGIN_TIMEOUT` too) |
+| `WILDBURROW_SSH_PUBLIC_PORT` | `SSH_PORT` | The SSH port published to clients, when a port mapping makes it differ |
 | `WILDBURROW_WEBSOCKET_OPEN_TIMEOUT` | `10` | Seconds a client has to open a visitor stream |
 | `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | `~/.ssh/authorized_keys` | OpenSSH public keys, one per line |
 | `WILDBURROW_AUTH_PASSWORD_HASH` | | argon2 hash from `wildburrow hash-password` |
@@ -164,8 +170,9 @@ no `--data-dir`; its service manager decides where its data goes.
 Transports, auth methods and DNS providers are plugins registered through entry points: `wildburrow.transports`,
 `wildburrow.auth` and `wildburrow.dns`. A plugin class has a `Settings` dataclass, filled from
 `WILDBURROW_<NAME>_*` (transports), `WILDBURROW_AUTH_<NAME>_*` or `WILDBURROW_DNS_<NAME>_*`, and is constructed with
-it. Its fields become `serve` options the same way. A DNS plugin implements `create_txt`, `delete_txt`, `ensure_cname`
-and `aclose`; see `wildburrow/dns/base.py`.
+it. Its fields become `serve` options the same way. A transport also declares `methods`, the auth methods it carries
+mapped to the credential each sends, and `published()`, anything else a client needs to reach it. A DNS plugin
+implements `create_txt`, `delete_txt`, `ensure_cname` and `aclose`; see `wildburrow/dns/base.py`.
 Install a package that registers an entry point and select it by name.
 
 ## Development

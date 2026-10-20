@@ -25,9 +25,9 @@ from tests.conftest import (
     get,
     http,
 )
-from wildburrow import protocol
+from wildburrow import cli, protocol
 from wildburrow.auth.token import digest, new_token
-from wildburrow.client.config import ClientConfig
+from wildburrow.client.config import ClientConfig, config_path, read_config
 from wildburrow.client.websocket import Client, sign
 
 pytestmark = pytest.mark.e2e
@@ -597,3 +597,34 @@ async def test_an_unreachable_local_port_is_reported(
         assert (await request)[0] == 502
     message = f"could not reach the client for gone.{DOMAIN}: the client could not reach its local port"
     assert ("wildburrow.edge.http", logging.INFO, message) in caplog.record_tuples
+
+
+@pytest.mark.parametrize(
+    ("server_auth", "login", "expected"),
+    [("key", [], "key"), ("token,key", ["--token", TOKEN], "token")],
+)
+async def test_login_needs_nothing_but_the_server(
+    start_server: StartServer,
+    credentials: Credentials,
+    backend: Backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server_auth: str,
+    login: list[str],
+    expected: str,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    running = await start_server(
+        WILDBURROW_TRANSPORTS="websocket",
+        WILDBURROW_AUTH=server_auth,
+        WILDBURROW_AUTH_TOKEN_HASHES=f"ci:{digest(TOKEN)}",
+    )
+    url = f"http://127.0.0.1:{running.http_port}"
+    args = ["login", DOMAIN, "--url", url, "--identity", str(credentials.key), *login]
+    assert await asyncio.to_thread(cli.main, args) == 0
+    saved = read_config(config_path())
+    assert (saved.transport, saved.auth) == ("websocket", expected)
+    task, out = start_client(running, saved.__replace__(url=f"http://{DOMAIN}"), backend.port, ["app"])
+    assert await out.wait_for("ready:") == f"ready: http://app.{DOMAIN}"
+    assert await get(running.http_port, f"app.{DOMAIN}", "/w") == (200, b"GET /w HTTP/1.1")
+    await stop(task)

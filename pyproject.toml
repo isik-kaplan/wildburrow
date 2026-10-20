@@ -74,10 +74,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "LICENSE"]
+include = ["wildburrow", "tests", "README.md", "LICENSE"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wildburrow"]
+packages = ["wildburrow"]
 
 [tool.uv]
 default-groups = ["dev"]
@@ -117,7 +117,7 @@ show_missing = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
 
 [tool.mutmut]
-source_paths = ["src/wildburrow"]
+source_paths = ["wildburrow"]
 also_copy = ["scripts"]
 # The trampolines add statements no coverage gate can account for, and a fixed seed keeps a verdict repeatable.
 # The slowest test takes seconds, so a test still going at 30 is a mutant hanging it, not a slow test.

@@ -4,6 +4,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import ClassVar
 
 import asyncssh
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -104,12 +105,20 @@ class WebSocketTunnel:
 
 class WebSocketTransport:
     Settings = WebSocketSettings
+    methods: ClassVar[dict[str, type]] = {
+        "key": SignedChallengeCredential,
+        "password": PasswordCredential,
+        "token": TokenCredential,
+    }
 
     def __init__(self, settings: WebSocketSettings) -> None:
         self.settings = settings
         self.pending: dict[str, asyncio.Future[ServerConnection]] = {}
         self._peers: dict[int, Peer] = {}
         self._server: Server | None = None
+
+    def published(self) -> dict[str, int]:
+        return {}
 
     async def start(self, ctx: ServerContext) -> None:
         self._ctx = ctx

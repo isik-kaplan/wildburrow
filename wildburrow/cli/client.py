@@ -1,6 +1,7 @@
 import dataclasses
 import math
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import click
 
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
-from wildburrow.client import ssh, websocket
+from wildburrow.client import discovery, ssh, websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
 from wildburrow.config import PREFIX
 
@@ -122,15 +123,65 @@ def _default_identity(saved: ClientConfig) -> str:
         return ""
 
 
+def _published(config: ClientConfig) -> discovery.Published | None:
+    published = discovery.fetch(config.url or f"https://{config.server}", AUTH_BY_TRANSPORT)
+    if published is None:
+        click.echo(f"{config.server} doesn't say how to log in; starting from the built-in defaults", err=True)
+    return published
+
+
+def _listed(names: Iterable[str]) -> str:
+    return ", ".join(names)
+
+
+def _resolve(config: ClientConfig, given: dict[str, Any]) -> ClientConfig:
+    """`config` with what the server publishes filling in whatever wasn't given."""
+    if "transport" in given and "auth" in given:
+        return config
+    published = _published(config)
+    if published is None:
+        return config
+    transport = given.get("transport", published.transport)
+    if transport not in published.auth:
+        raise Failure(f"{config.server} doesn't take --transport {transport}; it offers: {_listed(published.auth)}", 2)
+    auth = given.get("auth", published.method_for(transport))
+    if auth not in published.auth[transport]:
+        offered = _listed(published.auth[transport])
+        raise Failure(f"{config.server} doesn't take --auth {auth} over {transport}; it takes: {offered}", 2)
+    port = given.get("ssh_port", published.ssh_port or config.ssh_port)
+    return dataclasses.replace(config, transport=transport, auth=auth, ssh_port=port)
+
+
+def _pick(question: str, choices: dict[str, str], default: str) -> str:
+    if len(choices) > 1:
+        return ask.choose(question, choices, default)
+    [only] = choices
+    click.echo(f"{question}: {only}, the only one the server offers")
+    return only
+
+
 def _ask_login(saved: ClientConfig) -> ClientConfig:
     server = ask.text("Server", saved.server, _required)
-    transport = ask.choose("Connect over", TRANSPORTS, saved.transport)
-    methods = {method: AUTH_METHODS[method] for method in AUTH_BY_TRANSPORT[transport]}
-    auth = ask.choose("Log in with", methods, saved.auth if saved.auth in methods else "key")
+    published = _published(dataclasses.replace(saved, server=server))
+    if published is None:
+        offered, mine = AUTH_BY_TRANSPORT, True
+    else:
+        # A choice made for this server before stands; for another server, its own default does.
+        offered, mine = published.auth, server == saved.server
+    choices = {name: TRANSPORTS[name] for name in offered}
+    transport = _pick(
+        "Connect over", choices, saved.transport if mine and saved.transport in offered else published.transport
+    )
+    methods = {method: AUTH_METHODS[method] for method in offered[transport]}
+    if mine and saved.auth in methods:
+        default = saved.auth
+    else:
+        default = "key" if published is None else published.method_for(transport)
+    auth = _pick("Log in with", methods, default)
     config = dataclasses.replace(saved, server=server, transport=transport, auth=auth)
     if transport == "ssh":
-        port = ask.text("SSH port", str(saved.ssh_port), _port)
-        config = dataclasses.replace(config, ssh_port=int(port))
+        port = published.ssh_port if published and published.ssh_port else saved.ssh_port
+        config = dataclasses.replace(config, ssh_port=int(ask.text("SSH port", str(port), _port)))
     if auth == "key":
         identity = ask.text("SSH key (empty lets ssh pick)", _default_identity(saved), _key_file)
         config = dataclasses.replace(config, identity=identity)
@@ -155,7 +206,9 @@ def _login(server: str | None, token: str | None, options: dict[str, Any]) -> in
     elif server is None:
         raise click.UsageError("Missing argument 'SERVER'.")
     else:
-        config = ClientConfig(server, **_given({"token": token, **options}))
+        config = _resolve(ClientConfig(server, **_given({"token": token, **options})), _given(options))
+        if config.auth == "token" and not config.token:
+            click.echo(f"no token saved: pass --token, or set {TOKEN_ENV} when connecting", err=True)
     write_config(path, config)
     click.echo(f"saved {path}")
     return 0

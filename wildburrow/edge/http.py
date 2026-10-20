@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
 
+from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import TunnelUnavailable
 from wildburrow.core.names import host_labels
@@ -19,7 +20,8 @@ HEAD_END = b"\r\n\r\n"
 TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 VERSION = re.compile(r"HTTP/1\.[01]")
 WHITESPACE = " \t"
-FIXED_HEADERS = ("Content-Type: text/plain; charset=utf-8", "Connection: close")
+TEXT = "text/plain; charset=utf-8"
+JSON = "application/json"
 
 
 class BadRequest(Exception):
@@ -62,11 +64,13 @@ def parse_request(head: bytes) -> Request:
     return Request(host.lower(), parts[1])
 
 
-def response(status: HTTPStatus, headers: dict[str, str] | None = None) -> bytes:
-    body = f"{status.value} {status.phrase}\n".encode()
+def response(
+    status: HTTPStatus, headers: dict[str, str] | None = None, body: bytes | None = None, content_type: str = TEXT
+) -> bytes:
+    body = f"{status.value} {status.phrase}\n".encode() if body is None else body
     lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
     lines += [f"{key}: {value}" for key, value in (headers or {}).items()]
-    lines += [f"Content-Length: {len(body)}", *FIXED_HEADERS]
+    lines += [f"Content-Length: {len(body)}", f"Content-Type: {content_type}", "Connection: close"]
     return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
 
@@ -158,11 +162,14 @@ class Edge:
             presented = writer.get_extra_info("ssl_object").context
             if presented is not self._ctx.certs.context_for(request.host):  # type: ignore[union-attr]
                 return response(HTTPStatus.MISDIRECTED_REQUEST)
-        if request.host == self._ctx.domain:
-            tunnel = self._ctx.root
+        labels = host_labels(request.host, self._ctx.domain)
+        # Any host but a tunnel's, so a tunnel's own app keeps every path.
+        if labels is None and request.target == protocol.INFO_PATH:
+            return response(HTTPStatus.OK, body=self._ctx.info, content_type=JSON)
+        if labels is not None:
+            tunnel = self._ctx.registry.resolve(labels)
         else:
-            labels = host_labels(request.host, self._ctx.domain)
-            tunnel = self._ctx.registry.resolve(labels) if labels is not None else None
+            tunnel = self._ctx.root if request.host == self._ctx.domain else None
         if tunnel is None:
             return response(HTTPStatus.NOT_FOUND)
         if self._mode is Mode.REDIRECT:

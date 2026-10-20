@@ -7,6 +7,7 @@ from websockets.exceptions import ConnectionClosed
 
 CONNECT_PATH = "/_wildburrow/connect"
 DATA_PATH = "/_wildburrow/data/"
+INFO_PATH = "/_wildburrow/info"
 SIGNATURE_NAMESPACE = "wildburrow"
 EOF_MARKER = "eof"
 READY = "ready: "

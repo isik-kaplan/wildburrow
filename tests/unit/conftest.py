@@ -11,6 +11,7 @@ from prompt_toolkit.output.plain_text import PlainTextOutput
 
 from wildburrow.auth.base import Authenticator
 from wildburrow.cli import ask
+from wildburrow.client import discovery
 from wildburrow.core.context import ServerContext
 
 
@@ -76,3 +77,22 @@ def no_exec(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.fail(f"tried to exec {args}")
 
     monkeypatch.setattr(os, "execvp", execvp)
+
+
+class LoginServer:
+    """What the server `wildburrow login` asks publishes: nothing at first, as an older server."""
+
+    def __init__(self) -> None:
+        self.published: discovery.Published | None = None
+        self.asked: list[str] = []
+
+    def fetch(self, base: str, known: object) -> discovery.Published | None:
+        self.asked.append(base)
+        return self.published
+
+
+@pytest.fixture(autouse=True)
+def login_server(monkeypatch: pytest.MonkeyPatch) -> LoginServer:
+    server = LoginServer()
+    monkeypatch.setattr(discovery, "fetch", server.fetch)
+    return server

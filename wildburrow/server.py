@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 from collections.abc import Mapping
 from datetime import timedelta
+from importlib.metadata import version
 from typing import Any, Self
 
 from wildburrow import config, plugins
@@ -39,7 +41,10 @@ class Server:
             data_dir=settings.data_dir,
             authenticator=Authenticator([plugins.load("auth", name, env) for name in settings.auth]),
         )
-        self.transports: list[Any] = [plugins.load("transport", name, env) for name in settings.transports]
+        self.loaded: dict[str, Any] = {name: plugins.load("transport", name, env) for name in settings.transports}
+        self.transports: list[Any] = list(self.loaded.values())
+        self.offered = {name: self.ctx.authenticator.methods(loaded.methods) for name, loaded in self.loaded.items()}
+        self.defaults = client_defaults(settings, self.offered)
         self.dns: Any = plugins.load("dns", settings.dns, env) if settings.dns else None
         self.edges: list[Edge]
         self._stack: contextlib.AsyncExitStack
@@ -98,6 +103,7 @@ class Server:
             for transport in self.transports:
                 await transport.start(self.ctx)
                 stack.push_async_callback(transport.stop)
+            self.ctx.info = json.dumps(self.info()).encode()
             if self.dns is not None:
                 in_use = lambda: {certs.parent(name) for name in self.ctx.registry.names()}  # noqa: E731
                 maintain = certs.maintain(in_use, self.settings.renew_interval_seconds, CERT_RETRY_SECONDS)
@@ -108,6 +114,31 @@ class Server:
 
     async def __aexit__(self, *exc: object) -> None:
         await self._stack.aclose()
+
+    def info(self) -> dict[str, Any]:
+        """How to log in, for `wildburrow login`: what each transport takes, and where a client should start."""
+        transports = {name: {"auth": self.offered[name], **loaded.published()} for name, loaded in self.loaded.items()}
+        return {"version": version(__package__), "transports": transports, "defaults": self.defaults}
+
+
+def client_defaults(settings: config.ServerSettings, offered: Mapping[str, list[str]]) -> dict[str, str]:
+    """The operator's choice, or else the first transport that can log anyone in and its first method."""
+    usable = [name for name, methods in offered.items() if methods]
+    if not usable:
+        raise config.ConfigError(f"no {config.PREFIX}AUTH plugin works over any of {config.PREFIX}TRANSPORTS")
+    transport = settings.client_transport or usable[0]
+    if transport not in usable:
+        raise config.ConfigError(
+            f"{config.PREFIX}CLIENT_TRANSPORT: {transport!r} isn't one of the transports clients can log in over: "
+            + ", ".join(usable)
+        )
+    methods = offered[transport]
+    auth = settings.client_auth or methods[0]
+    if auth not in methods:
+        raise config.ConfigError(
+            f"{config.PREFIX}CLIENT_AUTH: {auth!r} doesn't work over {transport}, which takes: " + ", ".join(methods)
+        )
+    return {"transport": transport, "auth": auth}
 
 
 async def _cancel(task: asyncio.Task[None]) -> None:

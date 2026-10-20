@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import ClassVar, Protocol
 
 from wildburrow.core.types import Credential, Identity, Peer
@@ -16,6 +16,11 @@ class Authenticator:
 
     def accepts(self, kind: type) -> bool:
         return any(kind in provider.handles for provider in self._providers)
+
+    def methods(self, kinds: Mapping[str, type]) -> list[str]:
+        """The named methods some provider takes, in the order the providers are tried."""
+        found = [method for provider in self._providers for method, kind in kinds.items() if kind in provider.handles]
+        return list(dict.fromkeys(found))
 
     async def authenticate(self, credential: Credential, peer: Peer) -> Identity | None:
         for provider in self._providers:
