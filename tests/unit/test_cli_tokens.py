@@ -276,3 +276,13 @@ def test_names_reports_why_it_could_not_ask(
     monkeypatch.setattr(websocket, "held_names", held)
     assert cli.main(["names"]) == 1
     assert capsys.readouterr().err == "authentication failed\n"
+
+
+def test_expiry_is_shown_in_utc_whatever_the_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        assert tokens_cli._when(1_000_000_000) == "2001-09-09 01:46 UTC"
+    finally:
+        monkeypatch.undo()
+        time.tzset()
