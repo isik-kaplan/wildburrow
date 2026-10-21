@@ -255,8 +255,23 @@ def check(root: Path, prefixes: tuple[str, ...] = EVERY_MUTANT) -> int:
     return 0 if found and not missed else 1
 
 
+def damaged(tree: Path) -> bool:
+    """Whether a run stopped mid-write left any of the cache unreadable, which no later run could read either."""
+    try:
+        for path in [*tree.rglob(f"*.py{META}"), tree / STATS, tree / BASELINE]:
+            if path.exists():
+                json.loads(path.read_text())
+        killers(tree / RECORD)
+    except ValueError, KeyError, TypeError:
+        return True
+    return False
+
+
 def run(root: Path, full: bool, shard: str | None) -> int:
     prefixes = SHARDS[shard] if shard else EVERY_MUTANT
+    if not full and damaged(root / TREE):
+        print(f"{TREE}/ was left half written, so this run starts over", flush=True)
+        full = True
     if full:
         shutil.rmtree(root / TREE, ignore_errors=True)
     print(f"{prune(root)} copies of removed files dropped", flush=True)

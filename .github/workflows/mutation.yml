@@ -62,8 +62,9 @@ jobs:
           key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.key.outputs.key }}-
       - run: uv run python -m scripts.mutation run --shard ${{ matrix.shard }} ${{ inputs.full && '--full' || '' }}
-      # Saved even when mutants survive or the job times out, so the next run picks up from here.
-      - if: always()
+      # Saved even when mutants survive or the job times out, so the next run picks up from here; not when cancelled,
+      # which can stop a write halfway.
+      - if: ${{ !cancelled() }}
         uses: actions/cache/save@v6.1.0
         with:
           path: mutants

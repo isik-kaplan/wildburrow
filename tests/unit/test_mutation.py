@@ -429,3 +429,33 @@ def test_decorated_functions_only_hand_off() -> None:
             ):
                 unmeasured.append(f"{path.relative_to(mutation.ROOT)}:{node.lineno} {node.name}")
     assert unmeasured == []
+
+
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        (f"{mutation.TREE}/pkg/mod.py.meta", ""),
+        (f"{mutation.TREE}/{mutation_killers.STATS}", "{"),
+        (f"{mutation.TREE}/{mutation.BASELINE}", "not json"),
+        (f"{mutation.TREE}/{mutation_killers.RECORD}", '{"mutant": "a", "killer": "t"}\n{"mutant": "b", "kil'),
+        (f"{mutation.TREE}/{mutation_killers.RECORD}", '{"mutant": "a"}\n'),
+        (f"{mutation.TREE}/{mutation_killers.RECORD}", "[1]\n"),
+    ],
+)
+def test_a_half_written_cache_starts_over(
+    root: Path, fake_mutmut, capsys: pytest.CaptureFixture[str], path: str, content: str
+) -> None:
+    verdicts_of(root, {mutant(1): 1})
+    write(root, path, content)
+    fake_mutmut.verdicts = {mutant(1): 1}
+    mutation.main(["run"], root)
+    assert capsys.readouterr().out.startswith(f"{mutation.TREE}/ was left half written, so this run starts over\n")
+    assert not (root / path).exists() or (root / path).read_text() != content
+
+
+def test_a_whole_cache_is_kept(root: Path) -> None:
+    verdicts_of(root, {mutant(1): 1})
+    write(root, f"{mutation.TREE}/{mutation_killers.STATS}", "{}")
+    write(root, f"{mutation.TREE}/{mutation_killers.RECORD}", '{"mutant": "a", "killer": "t"}\n')
+    assert not mutation.damaged(root / mutation.TREE)
+    assert not mutation.damaged(root / "missing")
