@@ -3,6 +3,8 @@ name: Publish
 on:
   push:
     branches: [master]
+  # For a run GitHub can't retry; only master publishes, the same as a push.
+  workflow_dispatch:
 
 # Keep this file's name: PyPI's trusted publisher is configured against "publish.yml".
 
@@ -17,8 +19,9 @@ jobs:
     uses: ./.github/workflows/mutation.yml
 
   version:
-    # Never publish a version that failed its tests or left a mutant alive.
+    # Never publish a version that failed its tests or left a mutant alive, or from anywhere but master.
     needs: [tests, mutation]
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
