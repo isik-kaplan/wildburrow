@@ -5,7 +5,7 @@ from typing import Any
 
 import click
 
-from wildburrow.cli import client, server, service
+from wildburrow.cli import client, server, service, tokens
 from wildburrow.service import ServiceError
 
 PROG = "wildburrow"
@@ -30,8 +30,8 @@ def cli() -> None:
     """Expose local ports on your own domain."""
 
 
-for command in (client.connect, client.login, client.logout, server.serve, service.service, server.hash_password,
-                server.token):  # fmt: skip
+for command in (client.connect, client.login, client.logout, client.names, server.serve, service.service,
+                server.hash_password, tokens.token, tokens.list_tokens):  # fmt: skip
     cli.add_command(command)
 
 

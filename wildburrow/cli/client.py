@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import math
 import os
@@ -9,6 +10,7 @@ import click
 
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
+from wildburrow.cli.output import table
 from wildburrow.client import discovery, ssh, websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
 from wildburrow.config import PREFIX
@@ -118,7 +120,7 @@ def _default_identity(saved: ClientConfig) -> str:
     if saved.identity:
         return saved.identity
     try:
-        return str(websocket.identity_file(saved))
+        return str(websocket.default_identity())
     except websocket.ClientError:
         return ""
 
@@ -211,6 +213,33 @@ def _login(server: str | None, token: str | None, options: dict[str, Any]) -> in
             click.echo(f"no token saved: pass --token, or set {TOKEN_ENV} when connecting", err=True)
     write_config(path, config)
     click.echo(f"saved {path}")
+    return 0
+
+
+@click.command()
+@click.option("--server", help="server to ask instead of the saved one")
+def names(server: str | None) -> int:
+    """List the names bound on the server right now, and which are yours. Logs in as a tunnel would."""
+    return _names(server)
+
+
+def _names(server: str | None) -> int:
+    saved = read_config(config_path())
+    server = server or (saved and saved.server)
+    if not server:
+        raise Failure("no server configured: run `wildburrow login` or pass --server", 2)
+    config = dataclasses.replace(saved, server=server) if saved else ClientConfig(server)
+    if token := os.environ.get(TOKEN_ENV):
+        config = dataclasses.replace(config, token=token)
+    try:
+        held = asyncio.run(websocket.held_names(config))
+    except websocket.ClientError as exc:
+        raise Failure(str(exc)) from None
+    if not held:
+        click.echo("no names are bound")
+        return 0
+    rows = [(entry["name"], "you" if entry["yours"] else "someone else") for entry in held]
+    table([("NAME", "HOLDER"), *sorted(rows)])
     return 0
 
 

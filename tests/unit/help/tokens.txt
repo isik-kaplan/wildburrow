@@ -1,0 +1,6 @@
+Usage: wildburrow tokens [OPTIONS]
+
+  List the tokens minted on this machine; a server can't list them.
+
+Options:
+  -h, --help  Show this message and exit.

@@ -1,4 +1,5 @@
 import asyncio
+import getpass
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,14 +37,14 @@ def test_websocket_base_rejects_other_schemes() -> None:
 
 def test_identity_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    assert identity_file(ClientConfig("s", identity="~/k")) == tmp_path / "k"
+    assert identity_file("~/k") == tmp_path / "k"
     with pytest.raises(ClientError, match=r"^no SSH key found; set one with `wildburrow login --identity PATH`$"):
-        identity_file(ClientConfig("s"))
+        identity_file("")
     (tmp_path / ".ssh").mkdir()
     (tmp_path / ".ssh" / "id_ecdsa").touch()
-    assert identity_file(ClientConfig("s")) == tmp_path / ".ssh" / "id_ecdsa"
+    assert identity_file("") == tmp_path / ".ssh" / "id_ecdsa"
     (tmp_path / ".ssh" / "id_ed25519").touch()
-    assert identity_file(ClientConfig("s")) == tmp_path / ".ssh" / "id_ed25519"
+    assert identity_file("") == tmp_path / ".ssh" / "id_ed25519"
 
 
 def test_sign_reports_ssh_keygen_errors(tmp_path: Path) -> None:
@@ -153,7 +154,7 @@ async def test_unknown_messages_are_ignored_and_a_closed_session_reconnects() ->
             "error: authentication failed",
         ],
     )
-    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "bind", "name": "app"}]
+    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "bind", "names": ["app"]}]
 
 
 async def test_rejections_end_the_client() -> None:
@@ -473,3 +474,39 @@ async def test_a_stream_that_cannot_reach_its_port_or_the_server_ends_quietly(un
 
     lines: list[str] = []
     await client(unused_tcp_port, lines, fake_connector())._stream(Gone([]), "s1")
+
+
+TOKEN_CONFIG = ClientConfig("s", auth="token", token="t", url="http://s")
+HELD = [{"name": "app", "yours": True}, {"name": "pic", "yours": False}]
+
+
+async def test_held_names_logs_in_and_asks_for_them() -> None:
+    control = FakeControl([welcome(), protocol.encode("status", message="x"), protocol.encode("names", names=HELD)])
+    assert await websocket.held_names(TOKEN_CONFIG, input, fake_connector(control)) == HELD
+    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "names"}]
+
+
+@pytest.mark.parametrize(
+    ("control", "message"),
+    [
+        (Refused, "authentication failed"),
+        (lambda: Refused(Close(1000, "")), "connection closed"),
+        (lambda: Refused(None), "connection closed"),
+        (lambda: FakeControl([welcome()]), "the server closed the connection without listing its names"),
+        (lambda: OSError("refused"), "could not connect to ws://s: refused"),
+    ],
+)
+async def test_held_names_says_why_it_has_none(control: Callable[[], FakeControl | Exception], message: str) -> None:
+    with pytest.raises(ClientError) as error:
+        await websocket.held_names(TOKEN_CONFIG, input, fake_connector(control()))
+    assert str(error.value) == message
+
+
+async def test_held_names_asks_the_password_and_connects_for_real_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts: list[str] = []
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: prompts.append(prompt) or "pw")
+    monkeypatch.setattr(websocket, "connect", fake_connector(control := FakeControl([welcome()])))
+    with pytest.raises(ClientError, match="without listing its names"):
+        await websocket.held_names(ClientConfig("s", user="me", auth="password", url="http://s"))
+    assert prompts == ["password: "]
+    assert control.sent[0] == {"type": "hello", "method": "password", "username": "me", "password": "pw"}

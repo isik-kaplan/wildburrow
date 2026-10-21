@@ -26,6 +26,12 @@ class Registry:
     def names(self) -> list[Name]:
         return list(self._tunnels)
 
+    def holder(self, name: Name) -> Tunnel | None:
+        return self._tunnels.get(name)
+
+    def holders(self) -> dict[Name, Tunnel]:
+        return dict(self._tunnels)
+
     def resolve(self, labels: tuple[str, ...]) -> Tunnel | None:
         if (tunnel := self._tunnels.get(Name(labels))) is not None:
             return tunnel

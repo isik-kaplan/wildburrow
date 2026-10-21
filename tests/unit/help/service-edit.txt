@@ -73,7 +73,9 @@ auth plugin password:
                                   default: 900
 
 auth plugin token:
-  --auth-token-hashes HASHES  required
+  --auth-token-hashes HASHES    optional
+  --auth-token-signers SIGNERS  optional
+  --auth-token-deny DENY        default: none
 
 dns plugin cloudflare:
   --dns-cloudflare-api-token API_TOKEN

@@ -4,7 +4,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import asyncssh
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -43,6 +43,16 @@ class WebSocketSettings:
 
 class ProtocolError(Exception):
     pass
+
+
+def _names(message: dict[str, Any]) -> list[str]:
+    # A 0.1 client binds one name per message.
+    if "name" in message:
+        return [str(message["name"])]
+    names = message["names"]
+    if not isinstance(names, list) or not names:
+        raise ValueError("names must be a list of names")
+    return [str(name) for name in names]
 
 
 def close_reason(exc: Exception) -> str:
@@ -177,7 +187,11 @@ class WebSocketTransport:
             async for raw in connection:
                 message = protocol.decode(raw)
                 if message["type"] == "bind":
-                    await self._bind(outbox, tunnel, str(message["name"]), bound)
+                    await self._bind(outbox, tunnel, _names(message), bound)
+                elif message["type"] == "names":
+                    held = self._ctx.registry.holders().items()
+                    names = [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]
+                    outbox.put("names", names=names)
                 elif message["type"] == "open-failed":
                     waiter = self.pending.get(str(message["id"]))
                     if waiter is not None and not waiter.done():
@@ -192,15 +206,16 @@ class WebSocketTransport:
                 self._ctx.registry.unbind(name, tunnel)
             await outbox.flush_and_stop()
 
-    async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, raw: str, bound: list[Name]) -> None:
+    async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, raws: list[str], bound: list[Name]) -> None:
         try:
-            name = await self._ctx.bind(raw, tunnel, lambda text: outbox.put("status", message=text))
+            names = await self._ctx.bind_all(raws, tunnel, lambda text: outbox.put("status", message=text))
         except BindRejected as exc:
-            outbox.put("rejected", name=raw, reason=str(exc))
+            outbox.put("rejected", names=raws, reason=str(exc))
             return
-        bound.append(name)
-        log.info("%s bound %s over websocket", tunnel.identity.name, name)
-        outbox.put("bound", name=str(name), url=self._ctx.url(name))
+        for name in names:
+            bound.append(name)
+            log.info("%s bound %s over websocket", tunnel.identity.name, name)
+            outbox.put("bound", name=str(name), url=self._ctx.url(name))
 
     async def _login(self, connection: ServerConnection, peer: Peer) -> Identity | None:
         hello = protocol.decode(await connection.recv())

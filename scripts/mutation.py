@@ -49,7 +49,7 @@ SHARDS = {
         "wildburrow.plugins.", "wildburrow.config.",
     ),
     "certs": ("wildburrow.certs.", "wildburrow.dns."),
-    "auth": ("wildburrow.auth.",),
+    "auth": ("wildburrow.auth.", "wildburrow.tokens."),
 }  # fmt: skip
 EVERY_MUTANT = ("",)
 NO_TESTS = 33

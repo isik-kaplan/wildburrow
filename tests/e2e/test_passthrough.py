@@ -12,7 +12,7 @@ from websockets.exceptions import ConnectionClosedOK
 from tests import acme_env
 from tests.conftest import DOMAIN, TIMEOUT, Connect, Credentials, Running, StartServer
 from tests.e2e.test_websocket import TOKEN, client_config, start_client, stop
-from wildburrow.auth.token import digest
+from wildburrow.tokens import digest
 
 pytestmark = pytest.mark.e2e
 

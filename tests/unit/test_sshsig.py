@@ -9,6 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from wildburrow import tokens
 from wildburrow.auth import sshsig
 from wildburrow.auth.keys import KeyAuth, KeySettings
 from wildburrow.core.types import Identity, Peer, SignedChallengeCredential
@@ -37,7 +38,7 @@ def sign(key: Path, message: bytes = MESSAGE, namespace: str = "wildburrow") -> 
 
 
 def armor(blob: bytes) -> str:
-    return f"{sshsig.ARMOR_BEGIN}\n{base64.b64encode(blob).decode()}\n{sshsig.ARMOR_END}\n"
+    return f"{tokens.ARMOR_BEGIN}\n{base64.b64encode(blob).decode()}\n{tokens.ARMOR_END}\n"
 
 
 def unarmor(armored: str) -> bytes:
@@ -84,9 +85,9 @@ def with_parts(blob: bytes, **changes: bytes) -> bytes:
     ("mutate", "reason"),
     [
         (lambda s, b: "garbage", "not an armored SSH signature"),
-        (lambda s, b: s.strip().removesuffix(sshsig.ARMOR_END), "not an armored SSH signature"),
-        (lambda s, b: s.strip().removeprefix(sshsig.ARMOR_BEGIN), "not an armored SSH signature"),
-        (lambda s, b: armor(b)[:-35] + "!!!!\n" + sshsig.ARMOR_END, "signature is not valid base64"),
+        (lambda s, b: s.strip().removesuffix(tokens.ARMOR_END), "not an armored SSH signature"),
+        (lambda s, b: s.strip().removeprefix(tokens.ARMOR_BEGIN), "not an armored SSH signature"),
+        (lambda s, b: armor(b)[:-35] + "!!!!\n" + tokens.ARMOR_END, "signature is not valid base64"),
         (lambda s, b: s.replace("\n", "\n*", 1), "signature is not valid base64"),
         (lambda s, b: armor(b"XXXXXX" + b[6:]), "unsupported signature format"),
         (lambda s, b: armor(b[:6] + struct.pack(">I", 2) + b[10:]), "unsupported signature format"),
@@ -142,3 +143,17 @@ async def test_key_auth_checks_signed_challenges(keys) -> None:
     assert await auth.authenticate(replayed, peer) is None
     stranger = SignedChallengeCredential(other, MESSAGE, sign(key.parent / "other"))
     assert await auth.authenticate(stranger, peer) is None
+
+
+def test_signer_reads_the_key_a_signature_claims(keys) -> None:
+    key, public, _ = keys
+    assert sshsig.signer(unarmor(sign(key))) == public
+
+
+@pytest.mark.parametrize(
+    "change", [lambda b: b"XXXXXX" + b[6:], lambda b: b[:6] + struct.pack(">I", 2) + b[10:], lambda b: b[:8]]
+)
+def test_signer_refuses_what_is_not_a_signature(keys, change) -> None:
+    key, _, _ = keys
+    with pytest.raises(sshsig.InvalidSignature, match=r"^(unsupported signature format|truncated signature)$"):
+        sshsig.signer(change(unarmor(sign(key))))

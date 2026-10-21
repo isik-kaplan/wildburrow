@@ -11,7 +11,6 @@ from typing import Any, get_type_hints
 import click
 
 from wildburrow import envfile
-from wildburrow.auth.token import digest, new_token
 from wildburrow.cli.errors import Failure
 from wildburrow.config import FILE_SUFFIX, PREFIX, SHOWN
 
@@ -165,18 +164,4 @@ def _hash_password() -> int:
     if password != getpass.getpass("again: "):
         raise Failure("passwords do not match")
     click.echo(PasswordHasher().hash(password))
-    return 0
-
-
-@click.command()
-@click.argument("name")
-def token(name: str) -> int:
-    """Create a token for the token auth plugin."""
-    return _token(name)
-
-
-def _token(name: str) -> int:
-    value = new_token()
-    click.echo(f"token (give this to the client): {value}")
-    click.echo(f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): {name}:{digest(value)}")
     return 0

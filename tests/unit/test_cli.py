@@ -17,13 +17,13 @@ from hypothesis import strategies as st
 
 from tests.unit.conftest import CTRL_C, DOWN, ENTER, LoginServer, Typist
 from wildburrow import cli, plugins
-from wildburrow.auth.token import digest
 from wildburrow.cli import client as client_cli
 from wildburrow.cli import server as server_cli
 from wildburrow.client import discovery
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
 from wildburrow.client.ssh import KEEPALIVE, ssh_command
 from wildburrow.config import PREFIX
+from wildburrow.tokens import digest
 
 
 @pytest.fixture(autouse=True)
@@ -347,8 +347,8 @@ def test_websocket_transport_runs_the_websocket_client(monkeypatch: pytest.Monke
     assert calls == [(expected, 3000, ["a", "b"], "localhost")]
 
 
-def test_token_command(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["token", "ci"]) == 0
+def test_token_command_mints_a_hashed_token(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["token", "ci", "--hash"]) == 0
     token_line, server_line = capsys.readouterr().out.splitlines()
     token = token_line.removeprefix("token (give this to the client): ")
     assert server_line == f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): ci:{digest(token)}"
@@ -645,7 +645,7 @@ def test_logout_without_a_login(capsys: pytest.CaptureFixture[str]) -> None:
 
 HELP = Path(__file__).parent / "help"
 PAGES = [
-    [], ["connect"], ["login"], ["logout"], ["serve"], ["hash-password"], ["token"],
+    [], ["connect"], ["login"], ["logout"], ["names"], ["serve"], ["hash-password"], ["token"], ["tokens"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip
 

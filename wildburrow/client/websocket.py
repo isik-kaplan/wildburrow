@@ -32,9 +32,11 @@ def websocket_base(config: ClientConfig) -> str:
     raise ClientError(f"url must start with https:// or http://, got {base!r}")
 
 
-def identity_file(config: ClientConfig) -> Path:
-    if config.identity:
-        return Path(config.identity).expanduser()
+def identity_file(identity: str) -> Path:
+    return Path(identity).expanduser() if identity else default_identity()
+
+
+def default_identity() -> Path:
     for name in DEFAULT_IDENTITIES:
         if (path := Path.home() / ".ssh" / name).exists():
             return path
@@ -45,14 +47,14 @@ def sign(key: Path, namespace: str, message: bytes) -> str:
     command = ["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", namespace]
     result = subprocess.run(command, input=message, capture_output=True)  # noqa: S603
     if result.returncode != 0:
-        raise ClientError(f"ssh-keygen could not sign the login challenge: {result.stderr.decode().strip()}")
+        raise ClientError(f"ssh-keygen could not sign: {result.stderr.decode().strip()}")
     return result.stdout.decode()
 
 
 def hello(config: ClientConfig, ask: Callable[[str], str]) -> dict[str, str]:
     match config.auth:
         case "key":
-            public = identity_file(config).with_suffix(".pub")
+            public = identity_file(config.identity).with_suffix(".pub")
             return {"method": "key", "username": config.username, "public_key": public.read_text().strip()}
         case "password":
             return {"method": "password", "username": config.username, "password": ask("password: ")}
@@ -62,6 +64,38 @@ def hello(config: ClientConfig, ask: Callable[[str], str]) -> dict[str, str]:
             return {"method": "token", "token": config.token}
         case other:
             raise ClientError(f"unknown auth method {other!r}")
+
+
+async def login(control: ClientConnection, config: ClientConfig, greeting: dict[str, str]) -> str:
+    """Logs in on `control` and returns the identity the server knows this client by."""
+    await control.send(protocol.encode("hello", **greeting))
+    first = protocol.decode(await control.recv())
+    if first["type"] == "challenge":
+        signature = sign(identity_file(config.identity), str(first["namespace"]), str(first["message"]).encode())
+        await control.send(protocol.encode("signature", signature=signature))
+        first = protocol.decode(await control.recv())
+    return str(first["identity"])
+
+
+async def held_names(
+    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> list[dict[str, Any]]:
+    """The names bound on the server right now, each marked whether this client's identity holds it."""
+    greeting = hello(config, ask or getpass.getpass)
+    try:
+        async with (connector or connect)(f"{websocket_base(config)}{protocol.CONNECT_PATH}") as control:
+            await login(control, config, greeting)
+            await control.send(protocol.encode("names"))
+            async for raw in control:
+                if (message := protocol.decode(raw))["type"] == "names":
+                    return list(message["names"])
+    except ConnectionClosed as exc:
+        raise ClientError(
+            exc.rcvd.reason if exc.rcvd is not None and exc.rcvd.reason else "connection closed"
+        ) from None
+    except (OSError, InvalidHandshake, InvalidURI, TimeoutError) as exc:
+        raise ClientError(f"could not connect to {websocket_base(config)}: {exc}") from None
+    raise ClientError("the server closed the connection without listing its names")
 
 
 class Client:
@@ -120,18 +154,10 @@ class Client:
                 task.cancel()
 
     async def _session(self, control: ClientConnection, greeting: dict[str, str]) -> int | None:
-        await control.send(protocol.encode("hello", **greeting))
-        first = protocol.decode(await control.recv())
-        if first["type"] == "challenge":
-            key = identity_file(self._config)
-            signature = sign(key, str(first["namespace"]), str(first["message"]).encode())
-            await control.send(protocol.encode("signature", signature=signature))
-            first = protocol.decode(await control.recv())
-        self._out(f"connected as {first['identity']}")
+        self._out(f"connected as {await login(control, self._config, greeting)}")
         self._connected = True
         self._backoff.reset()
-        for name in self._names:
-            await control.send(protocol.encode("bind", name=name))
+        await control.send(protocol.encode("bind", names=self._names))
         async for raw in control:
             message = protocol.decode(raw)
             match message["type"]:

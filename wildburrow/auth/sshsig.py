@@ -1,12 +1,11 @@
-import base64
 import hashlib
 
 from asyncssh.public_key import decode_ssh_public_key
 
+from wildburrow import tokens
+
 MAGIC = b"SSHSIG"
 VERSION = 1
-ARMOR_BEGIN = "-----BEGIN SSH SIGNATURE-----"
-ARMOR_END = "-----END SSH SIGNATURE-----"
 HASHES = {"sha256": hashlib.sha256, "sha512": hashlib.sha512}
 
 
@@ -40,15 +39,19 @@ class _Reader:
         return self._offset == len(self._data)
 
 
-def verify(armored: str, public_key: bytes, namespace: str, message: bytes) -> None:
-    body = armored.strip()
-    if not body.startswith(ARMOR_BEGIN) or not body.endswith(ARMOR_END):
-        raise InvalidSignature("not an armored SSH signature")
-    try:
-        blob = base64.b64decode("".join(body[len(ARMOR_BEGIN) : -len(ARMOR_END)].split()), validate=True)
-    except ValueError:
-        raise InvalidSignature("signature is not valid base64") from None
+def signer(blob: bytes) -> bytes:
+    """The public key a signature claims to be from; only `verify` says whether it is."""
     reader = _Reader(blob)
+    if reader.take(len(MAGIC)) != MAGIC or reader.uint32() != VERSION:
+        raise InvalidSignature("unsupported signature format")
+    return reader.string()
+
+
+def verify(armored: str, public_key: bytes, namespace: str, message: bytes) -> None:
+    try:
+        reader = _Reader(tokens.unarmor(armored))
+    except ValueError as exc:
+        raise InvalidSignature(str(exc)) from None
     if reader.take(len(MAGIC)) != MAGIC or reader.uint32() != VERSION:
         raise InvalidSignature("unsupported signature format")
     signer, signed_namespace, reserved = reader.string(), reader.string(), reader.string()

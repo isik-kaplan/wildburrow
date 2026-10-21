@@ -13,6 +13,9 @@ class Identity:
     name: str
     method: str
     subject: str
+    # The names this identity may claim, `*` standing for one label; None for any. Not part of who it is, so the same
+    # person keeps their names across tokens that differ in scope.
+    names: tuple[str, ...] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

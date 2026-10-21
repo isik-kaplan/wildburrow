@@ -44,6 +44,33 @@ def parse_name(raw: str, domain: str, max_depth: int) -> Name:
     return name
 
 
+ANY = "any"
+
+
+def parse_patterns(raw: str) -> tuple[str, ...] | None:
+    """The names a token may claim: `any`, or comma-separated names where a `*` label stands for any one label."""
+    if raw.strip().lower() == ANY:
+        return None
+    patterns = tuple(dict.fromkeys(item.strip().lower() for item in raw.split(",") if item.strip()))
+    if not patterns:
+        raise InvalidName(f"no names given: pass the names it may claim, or {ANY}")
+    for pattern in patterns:
+        if not all(label == "*" or LABEL.fullmatch(label) for label in pattern.split(".")):
+            raise InvalidName(f"{pattern!r}: labels are 1-63 of a-z, 0-9 and '-', or '*' for any one label")
+    return patterns
+
+
+def allows(patterns: tuple[str, ...] | None, name: Name) -> bool:
+    if patterns is None:
+        return True
+    labels = str(name).split(".")
+    return any(_matches(pattern.split("."), labels) for pattern in patterns)
+
+
+def _matches(pattern: list[str], labels: list[str]) -> bool:
+    return len(pattern) == len(labels) and all(pattern[i] in ("*", labels[i]) for i in range(len(labels)))
+
+
 def host_labels(host: str, domain: str) -> tuple[str, ...] | None:
     host = host.lower()
     suffix = f".{domain}"

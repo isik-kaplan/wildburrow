@@ -6,6 +6,7 @@ import logging
 import os
 import ssl
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -25,10 +26,11 @@ from tests.conftest import (
     get,
     http,
 )
-from wildburrow import cli, protocol
-from wildburrow.auth.token import digest, new_token
+from wildburrow import cli, protocol, tokens
+from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config
 from wildburrow.client.websocket import Client, sign
+from wildburrow.tokens import digest, new_token
 
 pytestmark = pytest.mark.e2e
 
@@ -539,10 +541,11 @@ async def test_binds_are_answered_in_full(start_server: StartServer, ws_env, cap
     async with await raw_control(running) as ws:
         await ws.send(protocol.encode("hello", method="token", token=TOKEN))
         await ws.recv()
+        # The form a 0.1 client sends, one name per message.
         await ws.send(protocol.encode("bind", name="*.*.foo"))
         assert protocol.decode(await ws.recv()) == {
             "type": "rejected",
-            "name": "*.*.foo",
+            "names": ["*.*.foo"],
             "reason": "'*.*.foo': '*' is only allowed as the leftmost label",
         }
         await ws.send(protocol.encode("bind", name="App"))
@@ -564,7 +567,9 @@ async def test_failed_logins_are_logged(start_server: StartServer, ws_env, caplo
 @pytest.mark.parametrize(
     ("message", "reason"),
     [
-        (json.dumps({"type": "bind"}), "'name'"),
+        (json.dumps({"type": "bind"}), "'names'"),
+        (json.dumps({"type": "bind", "names": "app"}), "names must be a list of names"),
+        (json.dumps({"type": "bind", "names": []}), "names must be a list of names"),
         ("x" * 200, "Expecting value: line 1 column 1 (char 0)"),
         (json.dumps({"type": "open-failed"}), "'id'"),
     ],
@@ -628,3 +633,71 @@ async def test_login_needs_nothing_but_the_server(
     assert await out.wait_for("ready:") == f"ready: http://app.{DOMAIN}"
     assert await get(running.http_port, f"app.{DOMAIN}", "/w") == (200, b"GET /w HTTP/1.1")
     await stop(task)
+
+
+def signed(
+    credentials: Credentials, names: tuple[str, ...] | None, expires: int | None = None, who: str = "alice"
+) -> str:
+    grant = tokens.Grant(who, names, expires, int(time.time()), tokens.new_id())
+    return tokens.encode(grant.payload(), tokens.unarmor(sign(credentials.key, tokens.NAMESPACE, grant.payload())))
+
+
+SIGNED_ENV = {"WILDBURROW_TRANSPORTS": "websocket", "WILDBURROW_AUTH": "token"}
+
+
+async def test_a_signed_token_opens_only_its_names(
+    start_server: StartServer, credentials: Credentials, backend: Backend
+) -> None:
+    running = await start_server(**SIGNED_ENV, WILDBURROW_AUTH_TOKEN_SIGNERS=credentials.public_key)
+    token = signed(credentials, ("alice", "*.alice"))
+    config = client_config(credentials, "token", token=token)
+    task, out = start_client(running, config, backend.port, ["alice", "*.alice"])
+    assert await out.wait_for("connected as") == "connected as alice"
+    assert await out.wait_for("ready:") == f"ready: http://alice.{DOMAIN}"
+    assert await get(running.http_port, f"api.alice.{DOMAIN}", "/w") == (200, b"GET /w HTTP/1.1")
+    await stop(task)
+    refused, out = start_client(running, config, backend.port, ["alice", "bob"])
+    assert await asyncio.wait_for(refused, TIMEOUT) == 1
+    assert await out.wait_for("rejected:") == "rejected: bob: alice may only claim alice, *.alice"
+    assert running.server.ctx.registry.names() == []
+
+
+async def test_an_expired_token_is_refused(start_server: StartServer, credentials: Credentials) -> None:
+    running = await start_server(**SIGNED_ENV, WILDBURROW_AUTH_TOKEN_SIGNERS=credentials.public_key)
+    config = client_config(credentials, "token", token=signed(credentials, None, int(time.time()) - 3600))
+    task, out = start_client(running, config, 9, ["app"])
+    assert await asyncio.wait_for(task, TIMEOUT) == 1
+    assert await out.wait_for("error:") == "error: authentication failed"
+
+
+async def test_a_bind_takes_every_name_or_none(
+    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env
+) -> None:
+    running = await start_server(**ws_env)
+    holder, out = start_client(running, client_config(credentials, "key"), backend.port, ["taken", "pic"])
+    await out.wait_for("ready:")
+    task, out = start_client(running, client_config(credentials, "token"), backend.port, ["free", "taken", "pic"])
+    assert await asyncio.wait_for(task, TIMEOUT) == 1
+    assert await out.wait_for("rejected:") == (
+        "rejected: taken is already bound by laptop; pic is already bound by laptop"
+    )
+    assert sorted(map(str, running.server.ctx.registry.names())) == ["pic", "taken"]
+    await stop(holder)
+
+
+async def test_names_lists_what_is_bound_and_whose(
+    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env
+) -> None:
+    running = await start_server(**ws_env)
+    holder, out = start_client(running, client_config(credentials, "key"), backend.port, ["mine", "*.mine"])
+    await out.wait_for("ready:")
+    await out.wait_for("ready:")
+    connector = local(running)
+    assert sorted(
+        await websocket.held_names(client_config(credentials, "key"), connector=connector), key=lambda e: e["name"]
+    ) == [{"name": "*.mine", "yours": True}, {"name": "mine", "yours": True}]
+    assert await websocket.held_names(client_config(credentials, "token"), connector=connector) == [
+        {"name": "mine", "yours": False},
+        {"name": "*.mine", "yours": False},
+    ]
+    await stop(holder)

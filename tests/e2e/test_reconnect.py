@@ -8,10 +8,10 @@ from websockets.asyncio.client import connect as ws_connect
 from tests.conftest import DOMAIN, TIMEOUT, Backend, Credentials, Running, StartServer, free_port, get, ssh_args
 from tests.e2e.test_websocket import TOKEN, client_config, start_client, stop
 from tests.e2e.test_websocket import Lines as Output
-from wildburrow.auth.token import digest
 from wildburrow.client import ssh
 from wildburrow.client.retry import Backoff
 from wildburrow.client.websocket import Client
+from wildburrow.tokens import digest
 
 pytestmark = pytest.mark.e2e
 
