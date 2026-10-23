@@ -14,9 +14,21 @@ from wildburrow import service
 pytestmark = pytest.mark.system
 
 
-def wildburrow(*args: str) -> subprocess.CompletedProcess[str]:
+# A restart waits for the old server to go, which launchd gives 20 seconds before it kills it.
+RESTART_TIMEOUT = 30
+
+
+def wildburrow(*args: str, timeout: float = TIMEOUT) -> subprocess.CompletedProcess[str]:
     command = [sys.executable, "-m", "wildburrow", *args]
-    return subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT, check=False)
+    return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+async def changed(*args: str) -> subprocess.CompletedProcess[str]:
+    """`wildburrow service ...` run off the event loop, which the tunnel's backend needs meanwhile."""
+    try:
+        return await asyncio.to_thread(wildburrow, "service", *args, timeout=RESTART_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"`wildburrow service {' '.join(args)}` took over {RESTART_TIMEOUT}s:\n{logs()}")
 
 
 def logs() -> str:
@@ -78,11 +90,11 @@ async def test_install_edit_and_uninstall_the_service(
         "wildburrow is running as a launchd service",
     }
 
-    edited = wildburrow("service", "edit", f"--http-port={new_port}")
+    edited = await changed("edit", f"--http-port={new_port}")
     assert edited.returncode == 0, edited.stderr
     await serving(new_port)
 
-    removed = wildburrow("service", "uninstall", "--yes", "--purge")
+    removed = await changed("uninstall", "--yes", "--purge")
     assert removed.returncode == 0, removed.stderr
     assert removed.stdout == "removed the wildburrow service and its data\n"
     assert not exists(str(service.ENV_PATH.parent))
