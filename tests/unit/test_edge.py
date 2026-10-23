@@ -53,6 +53,46 @@ async def exchange(host: str, port: int, data: bytes) -> tuple[bytes, int]:
     return reply, local_port
 
 
+class Stalled:
+    """A tunnel that never opens, as one whose client went away mid-request."""
+
+    def __init__(self) -> None:
+        self.waiting = asyncio.Event()
+
+    async def open_stream(self, peer: Peer) -> tuple[Reader, Writer]:
+        self.waiting.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+def handlers() -> list[asyncio.Task]:
+    return [task for task in asyncio.all_tasks() if "Edge._handle" in repr(task)]
+
+
+async def test_stopping_ends_requests_still_waiting_on_a_tunnel(ctx: ServerContext) -> None:
+    ctx.root = stalled = Stalled()
+    async with running(ctx) as edge:
+        reader, writer = await asyncio.open_connection("127.0.0.1", edge.port)
+        writer.write(REQUEST)
+        async with asyncio.timeout(2):
+            await stalled.waiting.wait()
+        assert len(handlers()) == 1
+    assert handlers() == []
+    assert edge._handlers == set()
+    async with asyncio.timeout(2):
+        assert await reader.read() == b""
+    writer.close()
+
+
+async def test_finished_requests_leave_no_handler_behind(ctx: ServerContext) -> None:
+    ctx.root = Root()
+    async with running(ctx) as edge:
+        assert (await exchange("127.0.0.1", edge.port, REQUEST))[0] == REPLY
+        async with asyncio.timeout(2):
+            while edge._handlers:
+                await asyncio.sleep(0.01)
+
+
 async def test_the_edge_listens_only_where_it_is_told(ctx: ServerContext) -> None:
     async with running(ctx) as edge:
         assert [sock.getsockname()[0] for sock in edge._server.sockets] == ["127.0.0.1"]

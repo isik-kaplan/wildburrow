@@ -95,6 +95,7 @@ class Edge:
         self._tls = tls
         self._proxy_from = proxy_from
         self._server: asyncio.Server | None = None
+        self._handlers: set[asyncio.Task[None]] = set()
 
     @property
     def port(self) -> int:
@@ -108,6 +109,10 @@ class Edge:
             self._server.close()
             self._server.close_clients()
             await self._server.wait_closed()
+        # Closing a connection doesn't end a handler still waiting on its tunnel.
+        for handler in list(self._handlers):
+            handler.cancel()
+        await asyncio.gather(*self._handlers, return_exceptions=True)
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Peer | None:
         peer = Peer(*writer.get_extra_info("peername")[:2])
@@ -129,6 +134,9 @@ class Edge:
         return peer
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        handler = asyncio.current_task()
+        assert handler is not None  # noqa: S101
+        self._handlers.add(handler)
         try:
             peer = await self._accept(reader, writer)
             if peer is None:
@@ -140,6 +148,7 @@ class Edge:
         except OSError:
             pass
         finally:
+            self._handlers.discard(handler)
             writer.close()
 
     async def _serve(self, peer: Peer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes | None:
