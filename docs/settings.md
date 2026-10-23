@@ -7,6 +7,8 @@ Every setting is an option of `serve`, `service install` and `service edit`, and
 - Adding `-file` to an option, or `_FILE` to a variable, reads the value from a file, for secrets and multi-line
   values: `--auth-key-authorized-keys-file=~/keys`, `WILDBURROW_DNS_CLOUDFLARE_API_TOKEN_FILE=/run/secrets/cf`.
 - `wildburrow serve --help` lists them all, installed plugins included.
+- In a terminal, `serve` asks for any required setting still missing, the server's and those of the plugins it uses.
+  `--no-input` or `WILDBURROW_NO_INPUT=1` makes it fail instead.
 - A service has no `--data-dir`; its service manager decides where its data goes.
 
 ## Server
@@ -18,6 +20,9 @@ Every setting is an option of `serve`, `service install` and `service edit`, and
 | `WILDBURROW_AUTH` | `key` | Auth plugins, tried in order: `key`, `password`, `token` |
 | `WILDBURROW_CLIENT_TRANSPORT` | first that works | The transport `wildburrow login` starts from |
 | `WILDBURROW_CLIENT_AUTH` | its first in `AUTH` | The auth method `wildburrow login` starts from |
+| `WILDBURROW_ADMINS` | `signers` | Who is an admin, by rules like `key` or `token:NAME`; [sessions.md](sessions.md) |
+| `WILDBURROW_SEE` | `own` | Whose sessions people see: `none`, `own`, `admins`, `all`; see [sessions.md](sessions.md) |
+| `WILDBURROW_KICK` | `own` | Whose sessions people can end, no further than `SEE` |
 | `WILDBURROW_DATA_DIR` | `~/.local/state/wildburrow` | Host key, certificates, ACME account; `/data` in the image |
 | `WILDBURROW_HTTP_HOST` / `_HTTP_PORT` | `0.0.0.0` / `80` | Plain HTTP listener |
 | `WILDBURROW_HTTPS_HOST` / `_HTTPS_PORT` | `0.0.0.0` / `443` | TLS listener, when `WILDBURROW_DNS` is set |

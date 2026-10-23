@@ -22,6 +22,10 @@ class Authenticator:
         found = [method for provider in self._providers for method, kind in kinds.items() if kind in provider.handles]
         return list(dict.fromkeys(found))
 
+    def signers(self) -> frozenset[str]:
+        """Fingerprints of the keys some provider takes signed tokens from."""
+        return frozenset().union(*(getattr(provider, "signers", ()) for provider in self._providers))
+
     async def authenticate(self, credential: Credential, peer: Peer) -> Identity | None:
         for provider in self._providers:
             if type(credential) in provider.handles and (identity := await provider.authenticate(credential, peer)):

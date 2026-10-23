@@ -15,6 +15,7 @@ from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.names import Name
+from wildburrow.core.sessions import Session
 from wildburrow.core.types import (
     Credential,
     Identity,
@@ -92,8 +93,9 @@ class _Outbox:
 
 
 class WebSocketTunnel:
-    def __init__(self, transport: WebSocketTransport, outbox: _Outbox, identity: Identity) -> None:
-        self.identity = identity
+    def __init__(self, transport: WebSocketTransport, outbox: _Outbox, session: Session) -> None:
+        self.identity = session.identity
+        self.session: Session | None = session
         self._transport = transport
         self._outbox = outbox
 
@@ -126,6 +128,7 @@ class WebSocketTransport:
         self.pending: dict[str, asyncio.Future[ServerConnection]] = {}
         self._peers: dict[int, Peer] = {}
         self._server: Server | None = None
+        self._ending: set[asyncio.Task[None]] = set()
 
     def published(self) -> dict[str, int]:
         return {}
@@ -180,8 +183,9 @@ class WebSocketTransport:
             await connection.close(protocol.CLOSE_AUTH_FAILED, "authentication failed")
             return
         outbox = _Outbox(connection)
-        outbox.put("welcome", identity=identity.name)
-        tunnel = WebSocketTunnel(self, outbox, identity)
+        outbox.put("welcome", identity=identity.name, features=[protocol.SESSIONS])
+        session = self._ctx.sessions.open(identity, "websocket", peer, lambda reason: self._end(connection, reason))
+        tunnel = WebSocketTunnel(self, outbox, session)
         bound: list[Name] = []
         try:
             async for raw in connection:
@@ -192,6 +196,10 @@ class WebSocketTransport:
                     held = self._ctx.registry.holders().items()
                     names = [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]
                     outbox.put("names", names=names)
+                elif message["type"] == protocol.SESSIONS:
+                    outbox.put(protocol.SESSIONS, sessions=self._ctx.listing(session))
+                elif message["type"] == "kick":
+                    outbox.put("kicked", **self._ctx.kick(session, message))
                 elif message["type"] == "open-failed":
                     waiter = self.pending.get(str(message["id"]))
                     if waiter is not None and not waiter.done():
@@ -202,9 +210,16 @@ class WebSocketTransport:
             await outbox.flush_and_stop()
             await connection.close(protocol.CLOSE_PROTOCOL_ERROR, close_reason(exc))
         finally:
+            self._ctx.sessions.close(session)
             for name in bound:
                 self._ctx.registry.unbind(name, tunnel)
             await outbox.flush_and_stop()
+
+    def _end(self, connection: ServerConnection, reason: str) -> None:
+        task = asyncio.create_task(connection.close(protocol.CLOSE_ENDED, reason[:MAX_REASON]))
+        # Only keeps the task from being collected before the close goes out.
+        self._ending.add(task)  # pragma: no mutate
+        task.add_done_callback(self._ending.discard)  # pragma: no mutate
 
     async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, raws: list[str], bound: list[Name]) -> None:
         try:

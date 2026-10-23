@@ -2,7 +2,6 @@ import json
 import os
 import re
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +10,12 @@ import click
 from wildburrow import tokens
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
-from wildburrow.cli.output import table
+from wildburrow.cli.output import NEVER, table, when
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config
 from wildburrow.config import PREFIX
 from wildburrow.core.names import ANY, InvalidName, parse_patterns
 
-NEVER = "never"
 DEFAULT_EXPIRY = "7d"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 DURATION = re.compile(r"([1-9][0-9]*)([mhdw])")
@@ -38,12 +36,6 @@ def _expiry(raw: str, now: int) -> int | None:
     return now + int(match[1]) * UNITS[match[2]]
 
 
-def _when(expires: int | None) -> str:
-    if expires is None:
-        return "never"
-    return datetime.fromtimestamp(expires, UTC).strftime("%Y-%m-%d %H:%M UTC")
-
-
 def _scope(names: tuple[str, ...] | None) -> str:
     return "any name" if names is None else ", ".join(names)
 
@@ -55,7 +47,7 @@ def _warning(grant: tokens.Grant) -> str:
             f"Only rotating the signer key or adding its id to {DENY} will ever stop it."
         )
     return (
-        f"{grant.name} gets a token for {_scope(grant.names)} until {_when(grant.expires)}.\n"
+        f"{grant.name} gets a token for {_scope(grant.names)} until {when(grant.expires)}.\n"
         "It can't be withdrawn before then, short of rotating the signer key."
     )
 
@@ -120,7 +112,7 @@ def _token(
     value = tokens.encode(grant.payload(), tokens.unarmor(armored))
     target = server or saved.server
     _record(grant, target)
-    click.echo(f"token for {name}, valid until {_when(grant.expires)}, for: {_scope(patterns)}")
+    click.echo(f"token for {name}, valid until {when(grant.expires)}, for: {_scope(patterns)}")
     click.echo(f"id: {grant.id} (for {DENY}, should it need stopping early)")
     click.echo(f"\non {name}'s device:")
     click.echo("  uv tool install wildburrow")
@@ -148,7 +140,7 @@ def _list_tokens() -> int:
     rows = [("ID", "NAME", "NAMES", "EXPIRES", "SERVER")]
     for entry in entries:
         expires = entry["expires"]
-        state = _when(expires) if expires is None or expires > now else f"expired {_when(expires)}"
+        state = when(expires) if expires is None or expires > now else f"expired {when(expires)}"
         names = None if entry["names"] is None else tuple(entry["names"])
         rows.append((entry["id"], entry["name"], _scope(names), state, entry["server"] or "-"))
     table(rows)

@@ -257,6 +257,15 @@ async def test_refusals_are_not_retried(close: Close, line: str) -> None:
     assert await run_client(Refused(close), FakeControl([])) == (1, [line])
 
 
+@pytest.mark.parametrize("reason", ["the token expired", "ended by laptop"])
+async def test_a_session_the_server_ends_is_not_retried(reason: str) -> None:
+    class Ended(FakeControl):
+        async def __anext__(self) -> str:
+            raise ConnectionClosedError(Close(protocol.CLOSE_ENDED, reason), None)
+
+    assert await run_client(Ended([welcome()]), FakeControl([])) == (1, ["connected as ci", f"closed: {reason}"])
+
+
 async def test_backoff_grows_until_a_login_succeeds() -> None:
     lines: list[str] = []
     session = [welcome()]
@@ -327,7 +336,8 @@ def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(websocket, "Client", Recording)
     config = ClientConfig("s", auth="token", url="http://s")
     assert websocket.run(config, 9, ["a"], "127.0.0.1") == 5
-    assert seen == [(config, 9, ["a"], "127.0.0.1")]
+    assert websocket.run(config, 9, ["a"], "127.0.0.1", str.upper) == 5
+    assert seen == [(config, 9, ["a"], "127.0.0.1", getpass.getpass), (config, 9, ["a"], "127.0.0.1", str.upper)]
 
 
 class FakeWS:
@@ -492,7 +502,7 @@ async def test_held_names_logs_in_and_asks_for_them() -> None:
         (Refused, "authentication failed"),
         (lambda: Refused(Close(1000, "")), "connection closed"),
         (lambda: Refused(None), "connection closed"),
-        (lambda: FakeControl([welcome()]), "the server closed the connection without listing its names"),
+        (lambda: FakeControl([welcome()]), "the server closed the connection without answering"),
         (lambda: OSError("refused"), "could not connect to ws://s: refused"),
     ],
 )
@@ -502,11 +512,74 @@ async def test_held_names_says_why_it_has_none(control: Callable[[], FakeControl
     assert str(error.value) == message
 
 
+def welcomed() -> str:
+    return protocol.encode("welcome", identity="ci", features=["sessions"])
+
+
+SESSIONS = [{"id": "a1", "who": "alice"}]
+
+
+PASSWORD_CONFIG = ClientConfig("s", user="me", auth="password", url="http://s")
+PASSWORD_HELLO = {"type": "hello", "method": "password", "username": "me", "password": "typed"}
+
+
+@pytest.mark.parametrize(
+    ("request_server", "answer"),
+    [
+        (lambda c: websocket.held_names(PASSWORD_CONFIG, lambda p: "typed", c), protocol.encode("names", names=[])),
+        (lambda c: websocket.sessions(PASSWORD_CONFIG, lambda p: "typed", c), protocol.encode("sessions", sessions=[])),
+        (
+            lambda c: websocket.kick(PASSWORD_CONFIG, {"who": "a"}, lambda p: "typed", c),
+            protocol.encode("kicked", sessions=[], refused=[]),
+        ),
+    ],
+    ids=["names", "sessions", "kick"],
+)
+async def test_requests_ask_the_password_with_the_prompt_given(request_server: Callable, answer: str) -> None:
+    control = FakeControl([welcomed(), answer])
+    await request_server(fake_connector(control))
+    assert control.sent[0] == PASSWORD_HELLO
+
+
+async def test_sessions_asks_a_server_that_lists_them() -> None:
+    control = FakeControl(
+        [welcomed(), protocol.encode("names", names=[]), protocol.encode("sessions", sessions=SESSIONS)]
+    )
+    assert await websocket.sessions(TOKEN_CONFIG, input, fake_connector(control)) == SESSIONS
+    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "sessions"}]
+
+
+@pytest.mark.parametrize(
+    "target", [{"session": "a1"}, {"name": "*.app"}, {"who": "alice"}], ids=["session", "name", "who"]
+)
+async def test_kick_names_what_to_end(target: dict[str, str]) -> None:
+    answer = protocol.encode("kicked", sessions=SESSIONS, refused=["b2"])
+    control = FakeControl([welcomed(), protocol.encode("sessions", sessions=[]), answer])
+    assert await websocket.kick(TOKEN_CONFIG, target, input, fake_connector(control)) == protocol.decode(answer)
+    assert control.sent[1] == {"type": "kick", **target}
+
+
+@pytest.mark.parametrize(
+    "request_server",
+    [
+        lambda c: websocket.sessions(TOKEN_CONFIG, input, c),
+        lambda c: websocket.kick(TOKEN_CONFIG, {"who": "a"}, input, c),
+    ],
+    ids=["sessions", "kick"],
+)
+@pytest.mark.parametrize("greeting", [welcome(), protocol.encode("welcome", identity="ci", features=["other"])])
+async def test_an_older_server_is_told_apart(request_server: Callable, greeting: str) -> None:
+    control = FakeControl([greeting])
+    with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.3\.0 or later$"):
+        await request_server(fake_connector(control))
+    assert len(control.sent) == 1
+
+
 async def test_held_names_asks_the_password_and_connects_for_real_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     prompts: list[str] = []
     monkeypatch.setattr(getpass, "getpass", lambda prompt: prompts.append(prompt) or "pw")
     monkeypatch.setattr(websocket, "connect", fake_connector(control := FakeControl([welcome()])))
-    with pytest.raises(ClientError, match="without listing its names"):
+    with pytest.raises(ClientError, match="without answering"):
         await websocket.held_names(ClientConfig("s", user="me", auth="password", url="http://s"))
     assert prompts == ["password: "]
     assert control.sent[0] == {"type": "hello", "method": "password", "username": "me", "password": "pw"}

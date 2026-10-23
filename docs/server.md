@@ -7,10 +7,10 @@ uv tool install 'wildburrow[server]'
 wildburrow service install
 ```
 
-`service install` asks for the domain, whether to serve HTTPS and through which DNS provider, and which keys may open
-tunnels, then installs the server as a system service and starts it: systemd on Linux, launchd on macOS. It asks for
-sudo itself. Point `tunnel.example.com` and `*.tunnel.example.com` at the server; DNS wildcards match any depth, so
-deeper names resolve too.
+`service install` asks for the domain, whether to serve HTTPS and through which DNS provider, which keys may open
+tunnels, and who may see and end others' sessions ([sessions.md](sessions.md)), then installs the server as a system
+service and starts it: systemd on Linux, launchd on macOS. It asks for sudo itself. Point `tunnel.example.com` and
+`*.tunnel.example.com` at the server; DNS wildcards match any depth, so deeper names resolve too.
 
 ```sh
 wildburrow service status       # running or not, and where the logs are
@@ -55,6 +55,8 @@ the environment:
 sudo wildburrow serve --domain=tunnel.example.com
 ```
 
+In a terminal it asks for any required setting still missing, such as the domain, or a DNS provider's token.
+
 ## Docker
 
 ```sh
@@ -77,7 +79,7 @@ The server answers `GET /_wildburrow/info` on its own domain, or any host that i
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "transports": {"ssh": {"auth": ["key"], "port": 2222}, "websocket": {"auth": ["key", "token"]}},
   "defaults": {"transport": "ssh", "auth": "key"}
 }

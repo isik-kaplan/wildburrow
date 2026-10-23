@@ -8,11 +8,9 @@ import asyncssh
 from wildburrow import tokens
 from wildburrow.auth import sshsig
 from wildburrow.config import SHOWN, ConfigError
+from wildburrow.core.sessions import GRACE_SECONDS
 from wildburrow.core.types import Identity, Peer, TokenCredential
 from wildburrow.tokens import digest
-
-# How far the minting machine's clock may be ahead of the server's before a fresh token reads as expired.
-SKEW_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +26,10 @@ class TokenAuth:
 
     def __init__(self, settings: TokenSettings, clock: Callable[[], float] = time.time) -> None:
         self._names = _hashes(settings.hashes)
-        self._signers = _signers(settings.signers)
+        signers = _signers(settings.signers)
+        self._signers = frozenset(signers)
+        # Fingerprints, for WILDBURROW_ADMINS=signers.
+        self.signers = frozenset(signers.values())
         if not self._names and not self._signers:
             raise ConfigError("set hashes, signers, or both")
         self._deny = frozenset(settings.deny)
@@ -50,10 +51,10 @@ class TokenAuth:
             sshsig.verify(tokens.armor(signature), signer, tokens.NAMESPACE, payload)
         except ValueError, sshsig.InvalidSignature:
             return None
-        if grant.id in self._deny or (grant.expires is not None and self._clock() > grant.expires + SKEW_SECONDS):
+        if grant.id in self._deny or (grant.expires is not None and self._clock() > grant.expires + GRACE_SECONDS):
             return None
         # One identity per name, so a person's tokens share their names whichever one they connect with.
-        return Identity(grant.name, "token", f"signed:{grant.name}", grant.names)
+        return Identity(grant.name, "token", f"signed:{grant.name}", grant.names, grant.expires, grant.id)
 
 
 def _lines(text: str) -> list[str]:
@@ -70,11 +71,13 @@ def _hashes(text: str) -> dict[str, str]:
     return names
 
 
-def _signers(text: str) -> frozenset[bytes]:
-    signers = set()
+def _signers(text: str) -> dict[bytes, str]:
+    """Each key's public data and fingerprint."""
+    signers = {}
     for line in _lines(text):
         try:
-            signers.add(asyncssh.import_public_key(line).public_data)
+            key = asyncssh.import_public_key(line)
         except asyncssh.KeyImportError, ValueError:
             raise ConfigError(f"signers: cannot read the key {line[:40]!r}") from None
-    return frozenset(signers)
+        signers[key.public_data] = key.get_fingerprint()
+    return signers

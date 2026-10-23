@@ -11,10 +11,14 @@ REMOTE_PORT = 80
 CONNECTION_FAILED = 255
 TERMINATED = 128 + signal.SIGTERM
 KEEPALIVE = ("-o", "ServerAliveInterval=30")
+# ssh asks nothing, failing instead.
+BATCH = ("-o", "BatchMode=yes")
 
 
-def ssh_command(config: ClientConfig, port: int, names: Sequence[str], local_host: str) -> list[str]:
-    command = ["ssh", "-T", "-p", str(config.ssh_port), *KEEPALIVE]
+def ssh_command(
+    config: ClientConfig, port: int, names: Sequence[str], local_host: str, batch: bool = False
+) -> list[str]:
+    command = ["ssh", "-T", "-p", str(config.ssh_port), *KEEPALIVE, *(BATCH if batch else ())]
     for name in names:
         command += ["-R", f"{name}:{REMOTE_PORT}:{local_host}:{port}"]
     command += ["--", f"{config.username}@{config.server}"]
@@ -33,19 +37,20 @@ async def tunnel(
     connected = False
     while True:
         process = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, env=env)
-        ready = False
+        lines = []
         try:
             assert process.stdout is not None  # noqa: S101
             async for raw in process.stdout:
-                line = raw.decode(errors="replace").rstrip("\r\n")
+                lines.append(line := raw.decode(errors="replace").rstrip("\r\n"))
                 out(line)
-                ready = ready or line.startswith(protocol.READY)
             code = await process.wait()
         finally:
             if process.returncode is None:
                 process.terminate()
                 await process.wait()
-        if ready:
+        if any(line.startswith(protocol.ENDED) for line in lines):
+            return 1
+        if any(line.startswith(protocol.READY) for line in lines):
             connected = True
             backoff.reset()
         if code != CONNECTION_FAILED or not connected or not reconnect:
@@ -68,8 +73,8 @@ async def _main(config: ClientConfig, command: Sequence[str]) -> int:
         return TERMINATED
 
 
-def run(config: ClientConfig, port: int, names: Sequence[str], local_host: str) -> int:
+def run(config: ClientConfig, port: int, names: Sequence[str], local_host: str, batch: bool = False) -> int:
     try:
-        return asyncio.run(_main(config, ssh_command(config, port, names, local_host)))
+        return asyncio.run(_main(config, ssh_command(config, port, names, local_host, batch)))
     except KeyboardInterrupt:
         return 130

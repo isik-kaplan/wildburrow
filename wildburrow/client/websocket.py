@@ -66,36 +66,69 @@ def hello(config: ClientConfig, ask: Callable[[str], str]) -> dict[str, str]:
             raise ClientError(f"unknown auth method {other!r}")
 
 
-async def login(control: ClientConnection, config: ClientConfig, greeting: dict[str, str]) -> str:
-    """Logs in on `control` and returns the identity the server knows this client by."""
+async def login(control: ClientConnection, config: ClientConfig, greeting: dict[str, str]) -> dict[str, Any]:
+    """Logs in on `control` and returns the server's welcome, naming the identity it knows this client by."""
     await control.send(protocol.encode("hello", **greeting))
     first = protocol.decode(await control.recv())
     if first["type"] == "challenge":
         signature = sign(identity_file(config.identity), str(first["namespace"]), str(first["message"]).encode())
         await control.send(protocol.encode("signature", signature=signature))
         first = protocol.decode(await control.recv())
-    return str(first["identity"])
+    return first
 
 
-async def held_names(
-    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
-) -> list[dict[str, Any]]:
-    """The names bound on the server right now, each marked whether this client's identity holds it."""
+async def ask_server(
+    config: ClientConfig,
+    request: str,
+    answer: str,
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+    feature: str | None = None,
+    **fields: str,
+) -> dict[str, Any]:
+    """Logs in as a tunnel would, sends a `request` message with `fields`, and returns the first `answer`."""
     greeting = hello(config, ask or getpass.getpass)
     try:
         async with (connector or connect)(f"{websocket_base(config)}{protocol.CONNECT_PATH}") as control:
-            await login(control, config, greeting)
-            await control.send(protocol.encode("names"))
+            welcome = await login(control, config, greeting)
+            if feature is not None and feature not in welcome.get("features", ()):
+                raise ClientError(f"{config.server} runs an older wildburrow; this needs 0.3.0 or later")
+            await control.send(protocol.encode(request, **fields))
             async for raw in control:
-                if (message := protocol.decode(raw))["type"] == "names":
-                    return list(message["names"])
+                if (message := protocol.decode(raw))["type"] == answer:
+                    return message
     except ConnectionClosed as exc:
         raise ClientError(
             exc.rcvd.reason if exc.rcvd is not None and exc.rcvd.reason else "connection closed"
         ) from None
     except (OSError, InvalidHandshake, InvalidURI, TimeoutError) as exc:
         raise ClientError(f"could not connect to {websocket_base(config)}: {exc}") from None
-    raise ClientError("the server closed the connection without listing its names")
+    raise ClientError("the server closed the connection without answering")
+
+
+async def held_names(
+    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> list[dict[str, Any]]:
+    """The names bound on the server right now, each marked whether this client's identity holds it."""
+    return list((await ask_server(config, "names", "names", ask, connector))["names"])
+
+
+async def sessions(
+    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> list[dict[str, Any]]:
+    """The other sessions on the server this client's identity may see."""
+    answer = await ask_server(config, protocol.SESSIONS, protocol.SESSIONS, ask, connector, protocol.SESSIONS)
+    return list(answer[protocol.SESSIONS])
+
+
+async def kick(
+    config: ClientConfig,
+    target: dict[str, str],
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Ends the sessions `target` picks by `session`, `name` or `who`: what was ended, and the ids refused."""
+    return await ask_server(config, "kick", "kicked", ask, connector, protocol.SESSIONS, **target)
 
 
 class Client:
@@ -132,6 +165,9 @@ class Client:
                             return code
                     reason = "the server closed the connection"
                 except ConnectionClosed as exc:
+                    if exc.rcvd is not None and exc.rcvd.code == protocol.CLOSE_ENDED:
+                        self._out(f"{protocol.ENDED}{exc.rcvd.reason}")
+                        return 1
                     if exc.rcvd is not None and exc.rcvd.code in FATAL_CLOSE_CODES:
                         raise ClientError(exc.rcvd.reason or f"closed with code {exc.rcvd.code}") from None
                     reason = exc.rcvd.reason if exc.rcvd is not None and exc.rcvd.reason else "connection closed"
@@ -154,7 +190,7 @@ class Client:
                 task.cancel()
 
     async def _session(self, control: ClientConnection, greeting: dict[str, str]) -> int | None:
-        self._out(f"connected as {await login(control, self._config, greeting)}")
+        self._out(f"connected as {(await login(control, self._config, greeting))['identity']}")
         self._connected = True
         self._backoff.reset()
         await control.send(protocol.encode("bind", names=self._names))
@@ -191,8 +227,10 @@ class Client:
         await data.close()
 
 
-def run(config: ClientConfig, port: int, names: Sequence[str], local_host: str) -> int:
-    client = Client(config, port, names, local_host, out=lambda line: print(line, file=sys.stderr))
+def run(
+    config: ClientConfig, port: int, names: Sequence[str], local_host: str, ask: Callable[[str], str] = getpass.getpass
+) -> int:
+    client = Client(config, port, names, local_host, ask, out=lambda line: print(line, file=sys.stderr))
     try:
         return asyncio.run(client.run())
     except KeyboardInterrupt:

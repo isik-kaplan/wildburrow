@@ -68,6 +68,9 @@ class ServerSettings:
     auth: tuple[str, ...] = ("key",)
     client_transport: str = dataclasses.field(default="", metadata={SHOWN: "the first clients can log in over"})
     client_auth: str = dataclasses.field(default="", metadata={SHOWN: "its first method in AUTH"})
+    admins: tuple[str, ...] = ("signers",)
+    see: str = "own"
+    kick: str = "own"
     data_dir: Path = Path("~/.local/state/wildburrow")
     http_host: str = "0.0.0.0"  # noqa: S104
     http_port: int = 80

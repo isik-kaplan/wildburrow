@@ -11,8 +11,9 @@ from typing import Any, get_type_hints
 import click
 
 from wildburrow import envfile
+from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
-from wildburrow.config import FILE_SUFFIX, PREFIX, SHOWN
+from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET, SHOWN
 
 SERVER_EXTRA = "the server needs extra dependencies: install 'wildburrow[server]'"
 GROUPS = "wildburrow.settings"
@@ -139,6 +140,8 @@ def _serve(env_file: Path | None, options: dict[str, Any]) -> int:
         except envfile.EnvFileError as exc:
             raise Failure(f"configuration error: {exc}", 2) from None
     env = overlay(env, given_settings(options))
+    if ask.interactive():
+        env = _ask_missing(env)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         asyncio.run(serve(env))
@@ -147,6 +150,37 @@ def _serve(env_file: Path | None, options: dict[str, Any]) -> int:
     except OSError as exc:
         raise Failure(f"could not start: {exc}") from None
     return 0
+
+
+def _unset(group: SettingsGroup, env: dict[str, str]) -> Iterator[tuple[str, dataclasses.Field[Any]]]:
+    for var, field in group.fields():
+        if field.default is dataclasses.MISSING and var not in env and var + FILE_SUFFIX not in env:
+            yield var, field
+
+
+def _ask(env: dict[str, str], group: SettingsGroup) -> None:
+    for var, field in _unset(group, env):
+        question = ask.secret if field.metadata.get(SECRET) else ask.text
+        env[var] = question(var, check=ask.required)
+
+
+def _ask_missing(env: dict[str, str]) -> dict[str, str]:
+    """`env` with every required setting it lacks asked for: the server's, then those of the plugins it picks."""
+    from wildburrow import config, plugins
+
+    env = dict(env)
+    groups = {group.prefix: group for group in settings_groups()}
+    _ask(env, groups[PREFIX])
+    try:
+        settings = config.load(config.ServerSettings, env, PREFIX)
+    except config.ConfigError:
+        return env
+    # No DNS plugin is named "", so an unset one asks nothing.
+    for kind, names in (("transport", settings.transports), ("auth", settings.auth), ("dns", (settings.dns,))):
+        for name in names:
+            if (group := groups.get(plugins.prefix(kind, name))) is not None:
+                _ask(env, group)
+    return env
 
 
 @click.command("hash-password")

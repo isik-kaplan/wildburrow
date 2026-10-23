@@ -1,0 +1,7 @@
+Usage: wildburrow tunnels [OPTIONS]
+
+  List who is connected to the server, as far as you may see. Logs in as a tunnel would.
+
+Options:
+  --server TEXT  server to ask instead of the saved one
+  -h, --help     Show this message and exit.

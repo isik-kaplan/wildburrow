@@ -1,9 +1,10 @@
-Usage: wildburrow [OPTIONS] COMMAND [ARGS]...
+Usage: wildburrow [OPTIONS] [COMMAND] [ARGS]...
 
-  Expose local ports on your own domain.
+  Expose local ports on your own domain. Alone in a terminal, asks what to do.
 
 Options:
   --version   Show the version and exit.
+  --no-input  never ask anything, failing instead; also WILDBURROW_NO_INPUT=1
   -h, --help  Show this message and exit.
 
 Commands:
@@ -11,6 +12,8 @@ Commands:
   login          Save the server and how to connect to it.
   logout         Forget the saved server.
   names          List the names bound on the server right now, and which are yours.
+  tunnels        List who is connected to the server, as far as you may see.
+  kick           End sessions on the server: by id from `wildburrow tunnels`, by a name held,...
   serve          Run the server.
   service        Run the server as a system service: systemd on Linux, launchd on macOS.
   hash-password  Print an argon2 hash for the password auth plugin.

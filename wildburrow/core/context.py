@@ -2,12 +2,13 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from wildburrow.auth.base import Authenticator
 from wildburrow.core.errors import BindRejected
 from wildburrow.core.names import Name, allows, parse_name
 from wildburrow.core.registry import NameTaken, Registry
+from wildburrow.core.sessions import Policy, Session, Sessions, describe
 from wildburrow.core.types import Destination, Tunnel
 
 if TYPE_CHECKING:
@@ -31,6 +32,8 @@ class ServerContext:
     data_dir: Path
     authenticator: Authenticator
     registry: Registry = field(default_factory=Registry)
+    sessions: Sessions = field(default_factory=Sessions)
+    policy: Policy = field(default_factory=Policy)
     certs: CertManager | None = None
     root: Destination | None = None
     # What clients are told about logging in, published once the transports know their ports.
@@ -83,6 +86,45 @@ class ServerContext:
             except Exception as exc:
                 log.exception("certificate for *.%s failed", parent)
                 raise CertificateFailed(f"could not get a certificate for *.{parent}: {exc}") from exc
+
+    def names_of(self, session: Session) -> list[str]:
+        return [str(name) for name, tunnel in self.registry.holders().items() if tunnel.session is session]
+
+    def listing(self, actor: Session) -> list[dict[str, Any]]:
+        """The other sessions `actor` may see, as it is told about them."""
+        admin = actor.identity in self.policy.admins
+        return [
+            describe(session, self.names_of(session), actor.identity, admin)
+            for session in self.sessions
+            if session is not actor and self.policy.sees(actor.identity, session.identity)
+        ]
+
+    def kick(self, actor: Session, request: dict[str, Any]) -> dict[str, Any]:
+        """Ends the sessions `request` picks by id, held name or identity, among those `actor` may see."""
+        targets = [
+            session
+            for session in self._picked(request)
+            if session is not actor and self.policy.sees(actor.identity, session.identity)
+        ]
+        admin = actor.identity in self.policy.admins
+        kicked, refused = [], []
+        for session in targets:
+            if self.policy.kicks(actor.identity, session.identity):
+                kicked.append(describe(session, self.names_of(session), actor.identity, admin))
+                log.info("%s ended session %s of %s", actor.identity.name, session.id, session.identity.name)
+                session.end(f"ended by {actor.identity.name}")
+            else:
+                refused.append(session.id)
+        return {"sessions": kicked, "refused": refused}
+
+    def _picked(self, request: dict[str, Any]) -> list[Session]:
+        if "session" in request:
+            return [session for session in self.sessions if session.id == str(request["session"])]
+        if "who" in request:
+            return [session for session in self.sessions if session.identity.name == str(request["who"])]
+        raw = str(request["name"]).lower()
+        held = self.registry.holders().items()
+        return [tunnel.session for name, tunnel in held if str(name) == raw and tunnel.session is not None]
 
     def url(self, name: Name) -> str:
         return f"{'https' if self.certs else 'http'}://{name.fqdn(self.domain)}"

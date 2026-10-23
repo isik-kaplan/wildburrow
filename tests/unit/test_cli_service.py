@@ -199,7 +199,7 @@ def test_install_without_settings_or_a_terminal(
 
 
 def test_install_asks_in_a_terminal(root: Path, typed: Typist, home: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    typed("Tunnel.Example.COM", ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed("Tunnel.Example.COM", ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "install"]) == 0
     assert settings(root) == {
         f"{P}DOMAIN": DOMAIN,
@@ -213,6 +213,9 @@ def test_install_asks_in_a_terminal(root: Path, typed: Typist, home: Path, capsy
         "? Certificates none: plain HTTP on port 80",
         "? Transports ssh: clients connect on port 2222",
         f"? An authorized_keys file to copy them from {home / '.ssh/authorized_keys'}",
+        "? Admins signers: keys that also sign tokens",
+        "? Sessions people see own: only their own",
+        "? Sessions people can end own: only their own",
         "? Save these and start the server? Yes",
     )
 
@@ -220,7 +223,23 @@ def test_install_asks_in_a_terminal(root: Path, typed: Typist, home: Path, capsy
 def test_install_asks_for_https_and_its_secret(
     root: Path, typed: Typist, home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    typed(DOMAIN, ENTER, DOWN, ENTER, "cf-token", ENTER, "me@example.com", ENTER, DOWN, ENTER, ENTER, "y")
+    typed(
+        DOMAIN,
+        ENTER,
+        DOWN,
+        ENTER,
+        "cf-token",
+        ENTER,
+        "me@example.com",
+        ENTER,
+        DOWN,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        "y",
+    )
     assert cli.main(["service", "install"]) == 0
     assert settings(root) == {
         f"{P}DOMAIN": DOMAIN,
@@ -251,7 +270,7 @@ def test_install_answers_are_checked(root: Path, typed: Typist, home: Path, tmp_
         *("nodots", ENTER, "\b" * 6, "bad_label.com", ENTER, "\b" * 13, DOMAIN, ENTER),
         *(DOWN, ENTER, ENTER, "cf", ENTER, ENTER, ENTER),
         *("\b" * len(keys), missing, ENTER, "\b" * len(missing)),
-        *(empty, ENTER, "\b" * len(empty), keys, ENTER, ENTER),
+        *(empty, ENTER, "\b" * len(empty), keys, ENTER, ENTER, ENTER, ENTER, ENTER),
     )
     assert cli.main(["service", "install"]) == 0
     assert settings(root)[f"{P}DOMAIN"] == DOMAIN
@@ -259,8 +278,56 @@ def test_install_answers_are_checked(root: Path, typed: Typist, home: Path, tmp_
     assert f"{P}ACME_EMAIL" not in settings(root)
 
 
+def test_install_asks_who_sees_and_ends_sessions(root: Path, typed: Typist) -> None:
+    typed(DOMAIN, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, DOWN, DOWN, ENTER, DOWN, DOWN, ENTER, ENTER)
+    assert cli.main(["service", "install"]) == 0
+    assert settings(root) == {
+        f"{P}DOMAIN": DOMAIN,
+        f"{P}TRANSPORTS": "ssh",
+        KEYS: f"# mine\n{LAPTOP}",
+        f"{P}ADMINS": "key",
+        f"{P}SEE": "all",
+        f"{P}KICK": "all",
+    }
+    assert typed.showed(
+        "? Admins key: every key allowed to open tunnels",
+        "? Sessions people see all: their own, and admins anyone's",
+        "? Sessions people can end all: their own, and admins anyone's",
+    )
+
+
+def test_ending_is_offered_only_as_far_as_seeing(root: Path, typed: Typist) -> None:
+    install(root, "--see=admins", "--kick=admins", "--admins=key,key:laptop")
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER, ENTER)
+    assert cli.main(["service", "edit"]) == 0
+    assert settings(root)[f"{P}ADMINS"] == "key,key:laptop"
+    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("all", "admins")
+    assert typed.showed("? Admins key,key:laptop")
+    install(root, "--force", "--see=all", "--kick=all")
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER, ENTER)
+    assert cli.main(["service", "edit"]) == 0
+    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("none", "none")
+    assert typed.showed("? Sessions people can end none: none at all")
+
+
+def test_edit_drops_what_goes_back_to_its_default(root: Path, typed: Typist) -> None:
+    install(root, "--see=admins", "--admins=key")
+    typed(ENTER, ENTER, ENTER, ENTER, DOWN, DOWN, ENTER, *[DOWN] * 3, ENTER, ENTER, ENTER)
+    assert cli.main(["service", "edit"]) == 0
+    assert {f"{P}ADMINS", f"{P}SEE", f"{P}KICK"} & set(settings(root)) == set()
+    assert typed.showed("? Admins signers: keys that also sign tokens", "? Sessions people see own: only their own")
+
+
+def test_edit_keeps_what_was_kept_from_the_defaults(root: Path, typed: Typist) -> None:
+    install(root, "--see=admins")
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER)
+    assert cli.main(["service", "edit"]) == 0
+    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("admins", "admins")
+    assert f"{P}ADMINS" not in settings(root)
+
+
 def test_install_can_be_declined(root: Path, typed: Typist, capsys: pytest.CaptureFixture[str]) -> None:
-    typed(DOMAIN, ENTER, ENTER, ENTER, ENTER, "n")
+    typed(DOMAIN, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, "n")
     assert cli.main(["service", "install"]) == 1
     assert capsys.readouterr().err == "aborted\n"
     assert not installed(root)
@@ -286,7 +353,7 @@ def test_edit_changes_only_the_options_given(root: Path, commands: Commands) -> 
 def test_edit_asks_with_the_current_answers(root: Path, typed: Typist) -> None:
     install(root, "--dns=cloudflare", "--dns-cloudflare-api-token=old", "--acme-email=a@example.com")
     before = settings(root)
-    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert settings(root) == before | {f"{P}TRANSPORTS": "ssh"}
     assert typed.showed(
@@ -306,7 +373,7 @@ def test_edit_can_drop_https_and_replace_the_keys(root: Path, typed: Typist, tmp
     )
     (tmp_path / "new").write_text(f"{LAPTOP}\n{PHONE}\n")
     keys = str(home / ".ssh/authorized_keys")
-    typed(ENTER, DOWN, ENTER, ENTER, "n", "\b" * len(keys), str(tmp_path / "new"), ENTER, ENTER)
+    typed(ENTER, DOWN, ENTER, ENTER, "n", "\b" * len(keys), str(tmp_path / "new"), ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert settings(root) == {
         f"{P}DOMAIN": DOMAIN,
@@ -319,7 +386,7 @@ def test_edit_can_drop_https_and_replace_the_keys(root: Path, typed: Typist, tmp
 
 def test_edit_asks_for_keys_whenever_key_auth_is_on(root: Path, typed: Typist) -> None:
     install(root, "--auth=key,token", "--auth-token-hashes=" + "a:" + "0" * 64)
-    typed(ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert typed.showed("? Keep the 1 keys allowed to open tunnels? Yes")
 
@@ -331,14 +398,14 @@ def test_install_lets_in_the_invokers_keys_alongside_other_methods(root: Path) -
 
 def test_edit_keeps_an_unusual_transport_on_offer(root: Path, typed: Typist) -> None:
     install(root, "--transports=websocket")
-    typed(ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert settings(root)[f"{P}TRANSPORTS"] == "websocket"
 
 
 def test_edit_asks_no_keys_without_key_auth(root: Path, typed: Typist) -> None:
     install(root, "--transports=websocket", "--auth=token", "--auth-token-hashes=" + "a:" + "0" * 64)
-    typed(ENTER, ENTER, ENTER, ENTER)
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert KEYS not in settings(root)
 
@@ -545,7 +612,25 @@ def test_install_asks_for_what_a_dns_plugin_requires(
     monkeypatch.setattr(
         plugins, "available", lambda kind: available(kind) | ({"zone": EntryPoint()} if kind == "dns" else {})
     )
-    typed(DOMAIN, ENTER, DOWN, DOWN, ENTER, ENTER, "example.net", ENTER, "k3y", ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed(
+        DOMAIN,
+        ENTER,
+        DOWN,
+        DOWN,
+        ENTER,
+        ENTER,
+        "example.net",
+        ENTER,
+        "k3y",
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+        ENTER,
+    )
     assert cli.main(["service", "install"]) == 0
     assert settings(root) == {
         f"{P}DOMAIN": DOMAIN,
@@ -560,7 +645,7 @@ def test_install_asks_for_what_a_dns_plugin_requires(
         "? zone zone example.net",
         "? zone api key ***",
     )
-    typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, ENTER)
+    typed(*[ENTER] * 11)
     assert cli.main(["service", "edit"]) == 0
     assert settings(root)[f"{P}DNS_ZONE_ZONE"] == "example.net"
     assert settings(root)[f"{P}DNS_ZONE_API_KEY"] == "k3y"
@@ -577,11 +662,6 @@ def test_install_asks_for_what_a_dns_plugin_requires(
 )
 def test_domain_answers(answer: str, problem: str | None) -> None:
     assert service_cli._domain(answer) == problem
-
-
-@pytest.mark.parametrize(("answer", "problem"), [("x", None), ("  ", "required"), ("", "required")])
-def test_required_answers(answer: str, problem: str | None) -> None:
-    assert service_cli._required(answer) == problem
 
 
 def test_key_file_answers(tmp_path: Path) -> None:

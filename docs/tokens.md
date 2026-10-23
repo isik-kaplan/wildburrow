@@ -66,7 +66,9 @@ moves it), without the token itself. The server can't list tokens: it never stor
 
 ## Ending a token early
 
-With nothing kept on the server, a token can't be revoked on its own. Instead:
+A token's tunnels end when it expires (see [sessions.md](sessions.md#tokens-end-their-tunnels)), and
+`wildburrow kick --who alice` ends the ones open now. But with nothing kept on the server, the token itself can't be
+revoked on its own. Instead:
 
 - Keep expiries short and mint again when needed.
 - List its id in `WILDBURROW_AUTH_TOKEN_DENY` (comma-separated) and restart the server. A token that would have expired

@@ -2,6 +2,9 @@
 
 ## Install and log in
 
+`wildburrow` alone, in a terminal, asks what to do: open a tunnel, log in, mint a token, see or end sessions, or set
+up or change a server running here. Each choice asks for what it needs.
+
 ```sh
 uv tool install wildburrow    # or: pipx install wildburrow
 wildburrow login tunnel.example.com
@@ -19,6 +22,7 @@ all a client needs.
 - A server older than 0.2.0 publishes nothing, so `login` falls back to `ssh` and `key` and says so.
 - The answers live in `~/.config/wildburrow/config.toml`, readable only by you, until you log in again or
   `wildburrow logout`. Nothing in it expires; every tunnel logs in afresh.
+- A command that needs a server, run in a terminal with none saved and no `--server`, logs in first.
 
 ```sh
 wildburrow login tunnel.example.com --transport websocket --identity ~/.ssh/id_ed25519
@@ -47,7 +51,8 @@ With HTTPS, visitors use `wss://` and your app sees plain `ws://`.
 | `ssh` | your `ssh` binary, port 2222, one `-R` per name | `key`, `password` |
 | `websocket` | `wss://tunnel.example.com` on 443 | `key` (signed with `ssh-keygen -Y sign`), `password`, `token` |
 
-`websocket` gets through networks that only let HTTPS out. Tokens and `wildburrow names` only work over it.
+`websocket` gets through networks that only let HTTPS out. Tokens, `wildburrow names`, `tunnels` and `kick` only
+work over it.
 
 ## Staying up
 
@@ -55,9 +60,18 @@ When the connection drops, the client reconnects and binds its names again, wait
 and doubling up to `--retry-max` (default 30). Over websocket it also waits for a server that isn't reachable yet.
 
 - A refused login or a refused name ends the client instead: retrying wouldn't change the answer.
+- So does the server ending the session on purpose, because its token expired or someone ran `wildburrow kick`; the
+  client prints `closed: ` and the reason. See [sessions.md](sessions.md).
 - `--no-reconnect` makes any disconnect end it.
 - `login` saves these flags like the others, and `connect` overrides them for a run.
 - Reconnecting takes back your own names straight away, even before the server has noticed the old connection is gone.
+
+## Never asking
+
+`--no-input` (as in `wildburrow --no-input 3000 app`), or `WILDBURROW_NO_INPUT=1`, turns off every question: a command
+missing something fails instead of asking, a password login fails rather than prompting, and `ssh` runs with
+`BatchMode=yes`. Without a terminal nothing is asked anyway; this is for a terminal that shouldn't be asked, as in
+`docker run -it`.
 
 ## Proxies
 

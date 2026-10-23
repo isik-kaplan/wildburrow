@@ -2,7 +2,8 @@ import asyncio
 import dataclasses
 import math
 import os
-from collections.abc import Iterable
+import time
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,8 @@ import click
 
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
-from wildburrow.cli.output import table
+from wildburrow.cli.output import table, when
+from wildburrow.cli.tokens import DENY
 from wildburrow.client import discovery, ssh, websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
 from wildburrow.config import PREFIX
@@ -90,24 +92,29 @@ def connect(port: int, names: tuple[str, ...], server: str | None, local_host: s
 
 
 def _connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, options: dict[str, Any]) -> int:
+    config = dataclasses.replace(server_config(server), **_given(options))
+    if config.transport == "websocket":
+        return websocket.run(config, port, list(names), local_host, ask.password)
+    return ssh.run(config, port, list(names), local_host, batch=ask.off())
+
+
+def server_config(server: str | None) -> ClientConfig:
+    """The saved login, on `server` if given; in a terminal with none saved, logging in first."""
     saved = read_config(config_path())
-    server = server or (saved and saved.server)
-    if not server:
-        raise Failure("no server configured: run `wildburrow login` or pass --server", 2)
-    overrides = _given(options)
+    if not server and not saved:
+        if not ask.interactive():
+            raise Failure("no server configured: run `wildburrow login` or pass --server", 2)
+        click.echo("Not logged in to a server yet.")
+        _login(None, None, {})
+        saved = read_config(config_path())
+    if saved is None:
+        assert server is not None  # noqa: S101
+        config = ClientConfig(server)
+    else:
+        config = dataclasses.replace(saved, server=server or saved.server)
     if token := os.environ.get(TOKEN_ENV):
-        overrides["token"] = token
-    config = dataclasses.replace(saved, server=server, **overrides) if saved else ClientConfig(server, **overrides)
-    run = websocket.run if config.transport == "websocket" else ssh.run
-    return run(config, port, list(names), local_host)
-
-
-def _required(answer: str) -> str | None:
-    return None if answer.strip() else "required"
-
-
-def _port(answer: str) -> str | None:
-    return None if answer.isdigit() else "a port number"
+        config = dataclasses.replace(config, token=token)
+    return config
 
 
 def _key_file(answer: str) -> str | None:
@@ -163,7 +170,7 @@ def _pick(question: str, choices: dict[str, str], default: str) -> str:
 
 
 def _ask_login(saved: ClientConfig) -> ClientConfig:
-    server = ask.text("Server", saved.server, _required)
+    server = ask.text("Server", saved.server, ask.required)
     published = _published(dataclasses.replace(saved, server=server))
     if published is None:
         offered, mine = AUTH_BY_TRANSPORT, True
@@ -183,12 +190,12 @@ def _ask_login(saved: ClientConfig) -> ClientConfig:
     config = dataclasses.replace(saved, server=server, transport=transport, auth=auth)
     if transport == "ssh":
         port = published.ssh_port if published and published.ssh_port else saved.ssh_port
-        config = dataclasses.replace(config, ssh_port=int(ask.text("SSH port", str(port), _port)))
+        config = dataclasses.replace(config, ssh_port=int(ask.text("SSH port", str(port), ask.port)))
     if auth == "key":
         identity = ask.text("SSH key (empty lets ssh pick)", _default_identity(saved), _key_file)
         config = dataclasses.replace(config, identity=identity)
     if auth == "token":
-        config = dataclasses.replace(config, token=ask.secret("Token", _required))
+        config = dataclasses.replace(config, token=ask.secret("Token", ask.required))
     return config
 
 
@@ -224,23 +231,99 @@ def names(server: str | None) -> int:
 
 
 def _names(server: str | None) -> int:
-    saved = read_config(config_path())
-    server = server or (saved and saved.server)
-    if not server:
-        raise Failure("no server configured: run `wildburrow login` or pass --server", 2)
-    config = dataclasses.replace(saved, server=server) if saved else ClientConfig(server)
-    if token := os.environ.get(TOKEN_ENV):
-        config = dataclasses.replace(config, token=token)
-    try:
-        held = asyncio.run(websocket.held_names(config))
-    except websocket.ClientError as exc:
-        raise Failure(str(exc)) from None
+    held = _asked(websocket.held_names, server)
     if not held:
         click.echo("no names are bound")
         return 0
     rows = [(entry["name"], "you" if entry["yours"] else "someone else") for entry in held]
     table([("NAME", "HOLDER"), *sorted(rows)])
     return 0
+
+
+def _asked[T](request: Callable[..., Awaitable[T]], server: str | None, *args: Any) -> T:
+    try:
+        return asyncio.run(request(server_config(server), *args, ask.password))
+    except websocket.ClientError as exc:
+        raise Failure(str(exc)) from None
+
+
+def _row(entry: dict[str, Any]) -> tuple[str, ...]:
+    who = f"{entry['who']} (you)" if entry["yours"] else entry["who"]
+    expires = "-" if entry["expires"] is None else when(entry["expires"])
+    names = _listed(entry["names"]) or "-"
+    return (entry["id"], who, f"{entry['via']}/{entry['transport']}", names, when(entry["since"]), expires,
+            entry.get("from", "-"))  # fmt: skip
+
+
+@click.command()
+@click.option("--server", help="server to ask instead of the saved one")
+def tunnels(server: str | None) -> int:
+    """List who is connected to the server, as far as you may see. Logs in as a tunnel would."""
+    return _tunnels(server)
+
+
+def _tunnels(server: str | None) -> int:
+    listed(server)
+    return 0
+
+
+def listed(server: str | None) -> list[dict[str, Any]]:
+    """The sessions the server shows, after printing them."""
+    found = _asked(websocket.sessions, server)
+    if not found:
+        click.echo("no other sessions you can see")
+        return found
+    table([("ID", "WHO", "VIA", "NAMES", "SINCE", "EXPIRES", "FROM"), *map(_row, found)])
+    return found
+
+
+@click.command()
+@click.argument("session", required=False)
+@click.option("--name", help="end whichever session holds this name")
+@click.option("--who", help="end every session of this identity")
+@click.option("--server", help="server to ask instead of the saved one")
+def kick(session: str | None, name: str | None, who: str | None, server: str | None) -> int:
+    """End sessions on the server: by id from `wildburrow tunnels`, by a name held, or by identity."""
+    return _kick(session, name, who, server)
+
+
+def _kick(session: str | None, name: str | None, who: str | None, server: str | None) -> int:
+    picked = {key: value for key, value in {"session": session, "name": name, "who": who}.items() if value}
+    if len(picked) != 1:
+        raise click.UsageError("pass one of SESSION, --name and --who")
+    return end(server, picked)
+
+
+def end(server: str | None, picked: dict[str, str]) -> int:
+    """Ends what `picked` names, saying what ended and how it could come back."""
+    answer = _asked(websocket.kick, server, picked)
+    for entry in answer["sessions"]:
+        click.echo(f"ended {entry['id']}: {who(entry)}")
+        if hint := _still_valid(entry):
+            click.echo(f"  {hint}")
+    for refused in answer["refused"]:
+        click.echo(f"not allowed to end {refused}", err=True)
+    if not answer["sessions"] and not answer["refused"]:
+        click.echo("no session you can see matches", err=True)
+    return 0 if answer["sessions"] and not answer["refused"] else 1
+
+
+def who(entry: dict[str, Any]) -> str:
+    names = _listed(entry["names"]) or "no names"
+    return f"{entry['who']} over {entry['transport']}, holding {names}"
+
+
+def _still_valid(entry: dict[str, Any]) -> str | None:
+    """How whoever was ended can come back, unless it was this identity's own session."""
+    if entry["yours"]:
+        return None
+    if not entry["token"]:
+        return f"{entry['who']} can connect again with the same {entry['via']}"
+    expires = entry["expires"]
+    if expires is not None and expires <= time.time():
+        return None
+    until = "for good" if expires is None else f"until {when(expires)}"
+    return f"their token {entry['token']} logs in {until}; to stop it sooner, add the id to {DENY}"
 
 
 @click.command()

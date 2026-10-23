@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from wildburrow.core.sessions import Session
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +19,10 @@ class Identity:
     # The names this identity may claim, `*` standing for one label; None for any. Not part of who it is, so the same
     # person keeps their names across tokens that differ in scope.
     names: tuple[str, ...] | None = field(default=None, compare=False)
+    # Unix seconds after which the credential stops logging in; None for one that doesn't expire.
+    expires: int | None = field(default=None, compare=False)
+    # The signed token's id, for denying it.
+    token: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +70,8 @@ class Destination(Protocol):
 
 class Tunnel(Destination, Protocol):
     identity: Identity
+    # The login it came from; None for one no session tracks.
+    session: Session | None
 
 
 def bound_port(server: Any) -> int:

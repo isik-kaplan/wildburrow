@@ -64,6 +64,12 @@ def typed(monkeypatch: pytest.MonkeyPatch) -> Iterator[Typist]:
         yield Typist(stack)
 
 
+@pytest.fixture(autouse=True)
+def questions_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ask, "OFF", set())
+    monkeypatch.delenv(ask.NO_INPUT, raising=False)
+
+
 @pytest.fixture
 def no_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ask, "interactive", lambda: False)

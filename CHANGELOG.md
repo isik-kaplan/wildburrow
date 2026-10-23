@@ -7,6 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
+### Added
+
+- **`wildburrow tunnels`** lists who is connected: each session's id, identity, auth method and transport, names, when
+  it started and expires, and, for admins and on your own sessions, the client's address. See
+  [docs/sessions.md](docs/sessions.md).
+- **`wildburrow kick`** ends sessions by id, by a name held (`--name`) or by identity (`--who`), over either transport.
+  For a token still valid, it prints the id to add to `WILDBURROW_AUTH_TOKEN_DENY`.
+- **`WILDBURROW_ADMINS`, `WILDBURROW_SEE` and `WILDBURROW_KICK`** decide who is an admin and how far anyone sees and
+  ends other sessions. By default the token signers' keys are admins and everyone reaches only their own sessions, so a
+  token used on two machines can end one from the other.
+- **`wildburrow` alone in a terminal asks what to do**: open a tunnel, log in, mint a token, see or end sessions, or set
+  up or change a server here.
+- **`wildburrow serve` asks in a terminal** for required settings still missing, its own and its plugins'.
+- **`--no-input` and `WILDBURROW_NO_INPUT`** turn off every question; a command fails instead of asking.
+- **`service install` and `service edit`** ask who is an admin and who sees and ends sessions.
+
+### Changed
+
+- **A token's tunnels end when it expires**, within the minute's grace the login check allows. Before, a tunnel opened
+  with a token outlived it.
+- **A client whose session the server ended stops** instead of reconnecting, printing `closed: ` and why, over both
+  transports.
+- **A command that needs a server logs in first** when run in a terminal with none saved, instead of failing.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added

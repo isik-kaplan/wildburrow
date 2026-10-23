@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 
 from tests.unit.conftest import CTRL_C, DOWN, ENTER, LoginServer, Typist
 from wildburrow import cli, plugins
+from wildburrow.cli import ask
 from wildburrow.cli import client as client_cli
 from wildburrow.cli import server as server_cli
 from wildburrow.client import discovery
@@ -37,8 +38,8 @@ def config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def execs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     calls: list[list[str]] = []
 
-    def run(config: ClientConfig, port: int, names: list[str], local_host: str) -> int:
-        calls.append(ssh_command(config, port, names, local_host))
+    def run(config: ClientConfig, port: int, names: list[str], local_host: str, batch: bool) -> int:
+        calls.append(ssh_command(config, port, names, local_host, batch))
         return 0
 
     monkeypatch.setattr(client_cli.ssh, "run", run)
@@ -94,6 +95,23 @@ def test_ssh_command() -> None:
         "app:80:localhost:3000",
     ]
     assert command[-2:] == ["--", "me@tunnel.example.com"]
+    batch = ssh_command(ClientConfig("tunnel.example.com", 2200, "me"), 3000, ["app"], "localhost", batch=True)
+    assert batch == [
+        *("ssh", "-T", "-p", "2200", *KEEPALIVE, "-o", "BatchMode=yes"),
+        *("-R", "app:80:localhost:3000", "--", "me@tunnel.example.com"),
+    ]
+
+
+@pytest.mark.parametrize("off", [["--no-input"], []])
+def test_no_input_keeps_ssh_from_asking(
+    execs: list[list[str]], monkeypatch: pytest.MonkeyPatch, off: list[str]
+) -> None:
+    if not off:
+        monkeypatch.setenv(ask.NO_INPUT, "1")
+    assert cli.main([*off, "3000", "app", "--server", "s"]) == 0
+    assert cli.main([*off, "connect", "3000", "app", "--server", "s"]) == 0
+    assert all("BatchMode=yes" in command for command in execs)
+    assert len(execs) == 2
 
 
 def test_port_and_names_default_to_connect(execs: list[list[str]]) -> None:
@@ -234,6 +252,67 @@ def test_serve_options_replace_the_environment(served: list[dict[str, str]], mon
     assert environ[f"{PREFIX}HTTP_PORT"] == "80"
 
 
+def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
+    served: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch, typed: Typist
+) -> None:
+    environ = {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
+    monkeypatch.setattr(server_cli.os, "environ", environ)
+    typed(ENTER, "tunnel.example.com", ENTER, ENTER, "$argon2id$hash", ENTER, ENTER, "cf-token", ENTER)
+    assert cli.main(["serve", "--dns", "cloudflare", "--auth-key-authorized-keys", "ssh-ed25519 AAAA"]) == 0
+    assert served == [
+        environ
+        | {
+            f"{PREFIX}DNS": "cloudflare",
+            f"{PREFIX}AUTH_KEY_AUTHORIZED_KEYS": "ssh-ed25519 AAAA",
+            f"{PREFIX}DOMAIN": "tunnel.example.com",
+            f"{PREFIX}AUTH_PASSWORD_HASH": "$argon2id$hash",
+            f"{PREFIX}DNS_CLOUDFLARE_API_TOKEN": "cf-token",
+        }
+    ]
+    assert typed.showed(
+        f"? {PREFIX}DOMAIN tunnel.example.com",
+        f"? {PREFIX}AUTH_PASSWORD_HASH $argon2id$hash",
+        f"? {PREFIX}DNS_CLOUDFLARE_API_TOKEN ********",
+    )
+    assert environ == {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [
+        {f"{PREFIX}DOMAIN": "d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_HASH_FILE": "/h"},
+        {f"{PREFIX}DOMAIN_FILE": "/d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_HASH": "h"},
+        {f"{PREFIX}DOMAIN": "d", f"{PREFIX}DNS": "cloudflare", f"{PREFIX}DNS_CLOUDFLARE_API_TOKEN_FILE": "/t"},
+    ],
+)
+def test_serve_asks_nothing_already_set(
+    served: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch, typed: Typist, environ: dict[str, str]
+) -> None:
+    monkeypatch.setattr(server_cli.os, "environ", environ)
+    typed()
+    assert cli.main(["serve"]) == 0
+    assert served == [environ]
+
+
+def test_serve_leaves_unreadable_settings_to_the_server(
+    served: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch, typed: Typist
+) -> None:
+    environ = {f"{PREFIX}MAX_DEPTH": "deep", f"{PREFIX}AUTH": "password"}
+    monkeypatch.setattr(server_cli.os, "environ", environ)
+    typed("d", ENTER)
+    assert cli.main(["serve"]) == 0
+    assert served == [environ | {f"{PREFIX}DOMAIN": "d"}]
+
+
+def test_serve_asks_nothing_with_questions_off(
+    served: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch, typed: Typist
+) -> None:
+    monkeypatch.setattr(server_cli.os, "environ", {})
+    monkeypatch.setattr(ask, "interactive", lambda: False)
+    assert cli.main(["serve"]) == 0
+    assert served == [{}]
+
+
 def test_serve_reads_an_env_file_between_the_environment_and_the_options(
     served: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -258,7 +337,7 @@ def test_serve_reports_a_bad_env_file(
     ("args", "error"),
     [
         (["--domain", "a", "--domain-file", "b"], "Error: --domain and --domain-file can't be used together"),
-        (["--dom", "a"], "Error: No such option '--dom'. (Did you mean one of: '--dns', '--domain'?)"),
+        (["--dom", "a"], "Error: No such option '--dom'. (Did you mean one of: '--admins', '--dns', '--domain'?)"),
     ],
 )
 def test_serve_refuses_ambiguous_options(
@@ -315,7 +394,7 @@ def test_login_saves_every_option() -> None:
 
 def test_reconnect_flags_override_saved_config(monkeypatch: pytest.MonkeyPatch) -> None:
     configs: list[ClientConfig] = []
-    monkeypatch.setattr(client_cli.ssh, "run", lambda config, *args: configs.append(config) or 0)
+    monkeypatch.setattr(client_cli.ssh, "run", lambda config, *args, **kwargs: configs.append(config) or 0)
     cli.main(["login", "s", "--no-reconnect", "--retry-max", "5"])
     cli.main(["3000", "a"])
     cli.main(["3000", "a", "--reconnect", "--retry-delay", "2"])
@@ -344,7 +423,7 @@ def test_websocket_transport_runs_the_websocket_client(monkeypatch: pytest.Monke
     cli.main(["login", "s", "--transport", "websocket", "--auth", "token", "--token", "saved"])
     assert cli.main(["3000", "a", "b", "--url", "http://override"]) == 7
     expected = ClientConfig("s", transport="websocket", auth="token", token="from-env", url="http://override")
-    assert calls == [(expected, 3000, ["a", "b"], "localhost")]
+    assert calls == [(expected, 3000, ["a", "b"], "localhost", ask.password)]
 
 
 def test_token_command_mints_a_hashed_token(capsys: pytest.CaptureFixture[str]) -> None:
@@ -392,7 +471,7 @@ def test_connect_keeps_every_saved_option(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_no_command_shows_the_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main([]) == 2
-    assert capsys.readouterr().err.startswith("Usage: wildburrow [OPTIONS] COMMAND [ARGS]...\n")
+    assert capsys.readouterr().err.startswith("Usage: wildburrow [OPTIONS] [COMMAND] [ARGS]...\n")
 
 
 def test_login_asks_for_each_setting_in_a_terminal(typed: Typist, tmp_path: Path) -> None:
@@ -645,7 +724,8 @@ def test_logout_without_a_login(capsys: pytest.CaptureFixture[str]) -> None:
 
 HELP = Path(__file__).parent / "help"
 PAGES = [
-    [], ["connect"], ["login"], ["logout"], ["names"], ["serve"], ["hash-password"], ["token"], ["tokens"],
+    [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["serve"], ["hash-password"],
+    ["token"], ["tokens"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip
 
@@ -690,11 +770,6 @@ def test_settings_follow_the_plugins_installed_at_each_run(
     assert capsys.readouterr().err == server_cli.SERVER_EXTRA + "\n"
 
 
-@pytest.mark.parametrize(("answer", "problem"), [("x", None), (" ", "required"), ("", "required")])
-def test_required_login_answers(answer: str, problem: str | None) -> None:
-    assert client_cli._required(answer) == problem
-
-
 def test_key_file_login_answers(tmp_path: Path) -> None:
     (tmp_path / "key").write_text("private")
     assert client_cli._key_file("") is None
@@ -707,8 +782,6 @@ def test_login_port_must_be_a_number(typed: Typist) -> None:
     typed("s", ENTER, ENTER, ENTER, "\b" * 4, "x", ENTER, "\b", "22", ENTER, ENTER)
     assert cli.main(["login"]) == 0
     assert read_config(config_path()).ssh_port == 22
-    assert client_cli._port("x") == "a port number"
-    assert client_cli._port("22") is None
 
 
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, EOFError])

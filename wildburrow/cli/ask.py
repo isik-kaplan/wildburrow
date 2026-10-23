@@ -1,19 +1,50 @@
 """Questions for the interactive commands, which run when a command gets no options in a terminal."""
 
+import getpass
+import os
 import sys
 from collections.abc import Callable, Mapping
 from typing import Any
 
 import click
 
+from wildburrow.config import PREFIX, TRUE
+
+NO_INPUT = f"{PREFIX}NO_INPUT"
 # Where the prompts read and draw; tests point them at a pipe.
 IO: dict[str, Any] = {}
+# Holds NO_INPUT once --no-input is given.
+OFF: set[str] = set()
 
 type Check = Callable[[str], str | None]
 
 
+def off() -> bool:
+    """Whether --no-input or WILDBURROW_NO_INPUT turned questions off."""
+    return NO_INPUT in OFF or (NO_INPUT in os.environ and os.environ[NO_INPUT].strip().lower() in TRUE)
+
+
 def interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    return not off() and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def turn_off() -> None:
+    OFF.add(NO_INPUT)
+
+
+def password(prompt: str) -> str:
+    """The password to log in with, asked without echo unless questions are off."""
+    if off():
+        raise click.ClickException(f"a password is needed, and questions are off (--no-input or {NO_INPUT})")
+    return getpass.getpass(prompt)
+
+
+def required(answer: str) -> str | None:
+    return None if answer.strip() else "required"
+
+
+def port(answer: str) -> str | None:
+    return None if answer.strip().isdigit() and 0 < int(answer) < 1 << 16 else "a port number"
 
 
 def _validator(check: Check | None) -> Callable[[str], bool | str]:
@@ -39,7 +70,7 @@ def secret(message: str, check: Check | None = None) -> str:
     return _answer(questionary.password(message, validate=_validator(check), **IO)).strip()
 
 
-def choose(message: str, choices: Mapping[str, str], default: str) -> str:
+def choose[T](message: str, choices: Mapping[T, str], default: T) -> T:
     """`choices` maps each value to the line shown for it."""
     import questionary
 

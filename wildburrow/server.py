@@ -15,6 +15,7 @@ from wildburrow.certs.manager import CertManager, server_context
 from wildburrow.certs.store import CertStore
 from wildburrow.core.context import ServerContext
 from wildburrow.core.names import LABEL
+from wildburrow.core.sessions import Admins, Policy, level
 from wildburrow.edge import proxy
 from wildburrow.edge.http import Edge, Mode
 
@@ -35,11 +36,13 @@ class Server:
         except ValueError as exc:
             raise config.ConfigError(f"{config.PREFIX}PROXY_TRUSTED: {exc}") from None
         self.settings = settings
+        authenticator = Authenticator([plugins.load("auth", name, env) for name in settings.auth])
         self.ctx = ServerContext(
             domain=domain,
             max_depth=settings.max_depth,
             data_dir=settings.data_dir,
-            authenticator=Authenticator([plugins.load("auth", name, env) for name in settings.auth]),
+            authenticator=authenticator,
+            policy=policy(settings, authenticator),
         )
         self.loaded: dict[str, Any] = {name: plugins.load("transport", name, env) for name in settings.transports}
         self.transports: list[Any] = list(self.loaded.values())
@@ -119,6 +122,13 @@ class Server:
         """How to log in, for `wildburrow login`: what each transport takes, and where a client should start."""
         transports = {name: {"auth": self.offered[name], **loaded.published()} for name, loaded in self.loaded.items()}
         return {"version": version(__package__), "transports": transports, "defaults": self.defaults}
+
+
+def policy(settings: config.ServerSettings, authenticator: Authenticator) -> Policy:
+    """Who is an admin, and how far anyone sees and ends other sessions."""
+    admins = Admins.parse(f"{config.PREFIX}ADMINS", settings.admins, settings.auth, authenticator.signers())
+    see, kick = level(f"{config.PREFIX}SEE", settings.see), level(f"{config.PREFIX}KICK", settings.kick)
+    return Policy(admins, see, kick)
 
 
 def client_defaults(settings: config.ServerSettings, offered: Mapping[str, list[str]]) -> dict[str, str]:

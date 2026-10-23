@@ -10,7 +10,9 @@ from tests.conftest import Credentials
 from tests.unit.conftest import ENTER, Typist
 from wildburrow import cli, tokens
 from wildburrow.auth.token import TokenAuth, TokenSettings
+from wildburrow.cli import ask as cli_ask
 from wildburrow.cli import tokens as tokens_cli
+from wildburrow.cli.output import when
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, write_config
 from wildburrow.config import PREFIX
@@ -52,7 +54,7 @@ async def test_mints_a_token_the_server_accepts(
     assert grant.names == ("alice", "*.alice")
     assert grant.expires == pytest.approx(time.time() + 7 * 86400, abs=5)
     assert out == (
-        f"token for alice, valid until {tokens_cli._when(grant.expires)}, for: alice, *.alice\n"
+        f"token for alice, valid until {when(grant.expires)}, for: alice, *.alice\n"
         f"id: {grant.id} (for {PREFIX}AUTH_TOKEN_DENY, should it need stopping early)\n"
         "\non alice's device:\n"
         "  uv tool install wildburrow\n"
@@ -102,7 +104,7 @@ def test_asks_before_minting(logged_in: ClientConfig, typed: Typist, capsys: pyt
     out = capsys.readouterr().out
     grant = tokens.decode(minted(out))[0]
     assert out.startswith(
-        f"alice gets a token for alice until {tokens_cli._when(grant.expires)}.\n"
+        f"alice gets a token for alice until {when(grant.expires)}.\n"
         "It can't be withdrawn before then, short of rotating the signer key.\n"
     )
     assert typed.showed("? Mint it? Yes")
@@ -166,7 +168,7 @@ def test_a_token_is_expired_from_its_expiry_on(
     cli.main(["token", "alice", "--names", "alice", "-y"])
     expires = json.loads(tokens_cli.log_path().read_text())["expires"]
     capsys.readouterr()
-    for now, state in [(expires - 1, tokens_cli._when(expires)), (expires, f"expired {tokens_cli._when(expires)}")]:
+    for now, state in [(expires - 1, when(expires)), (expires, f"expired {when(expires)}")]:
         monkeypatch.setattr(time, "time", lambda now=now: now)
         cli.main(["tokens"])
         assert state in capsys.readouterr().out
@@ -223,7 +225,7 @@ def test_tokens_lists_what_was_minted_here(logged_in: ClientConfig, capsys: pyte
     first = entries[0]
     assert capsys.readouterr().out.splitlines() == [
         f"{'ID':<16}  NAME   NAMES           EXPIRES{' ' * 23}SERVER",
-        f"{first['id']}  alice  alice, *.alice  {tokens_cli._when(first['expires']):<30}{SERVER}",
+        f"{first['id']}  alice  alice, *.alice  {when(first['expires']):<30}{SERVER}",
         f"{entries[1]['id']}  bob    any name        {'never':<30}{SERVER}",
         f"{'0' * 16}  carol  alice, *.alice  expired 2001-09-09 01:46 UTC  -",
     ]
@@ -234,7 +236,8 @@ def test_names_lists_what_the_server_has_bound(
 ) -> None:
     asked: list[ClientConfig] = []
 
-    async def held(config: ClientConfig) -> list[dict]:
+    async def held(config: ClientConfig, ask: object) -> list[dict]:
+        assert ask is cli_ask.password
         asked.append(config)
         return [{"name": "pic", "yours": False}, {"name": "*.mine", "yours": True}, {"name": "mine", "yours": True}]
 
@@ -253,7 +256,7 @@ def test_names_lists_what_the_server_has_bound(
 
 
 def test_names_when_nothing_is_bound(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    async def held(config: ClientConfig) -> list[dict]:
+    async def held(config: ClientConfig, ask: object) -> list[dict]:
         assert config == ClientConfig("other.example.com")
         return []
 
@@ -270,7 +273,7 @@ def test_names_needs_a_server(capsys: pytest.CaptureFixture[str]) -> None:
 def test_names_reports_why_it_could_not_ask(
     logged_in: ClientConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    async def held(config: ClientConfig) -> list[dict]:
+    async def held(config: ClientConfig, ask: object) -> list[dict]:
         raise websocket.ClientError("authentication failed")
 
     monkeypatch.setattr(websocket, "held_names", held)
@@ -282,7 +285,7 @@ def test_expiry_is_shown_in_utc_whatever_the_local_zone(monkeypatch: pytest.Monk
     monkeypatch.setenv("TZ", "Asia/Tokyo")
     time.tzset()
     try:
-        assert tokens_cli._when(1_000_000_000) == "2001-09-09 01:46 UTC"
+        assert when(1_000_000_000) == "2001-09-09 01:46 UTC"
     finally:
         monkeypatch.undo()
         time.tzset()

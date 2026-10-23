@@ -11,9 +11,14 @@ INFO_PATH = "/_wildburrow/info"
 SIGNATURE_NAMESPACE = "wildburrow"
 EOF_MARKER = "eof"
 READY = "ready: "
+# Printed when the server ends a session on purpose, which the client then doesn't retry.
+ENDED = "closed: "
+# What a server answers beyond 0.2.0, listed in its welcome.
+SESSIONS = "sessions"
 CLOSE_PROTOCOL_ERROR = 4400
 CLOSE_AUTH_FAILED = 4401
 CLOSE_UNKNOWN_STREAM = 4404
+CLOSE_ENDED = 4410
 
 
 def challenge_message(domain: str, nonce: str) -> bytes:

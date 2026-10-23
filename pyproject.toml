@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wildburrow"
-version = "0.2.0"
+version = "0.3.0"
 description = "Self-hosted HTTP tunnels with on-demand wildcard certificates at any depth"
 readme = "README.md"
 license = "MIT"

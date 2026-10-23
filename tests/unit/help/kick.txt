@@ -1,0 +1,9 @@
+Usage: wildburrow kick [OPTIONS] [SESSION]
+
+  End sessions on the server: by id from `wildburrow tunnels`, by a name held, or by identity.
+
+Options:
+  --name TEXT    end whichever session holds this name
+  --who TEXT     end every session of this identity
+  --server TEXT  server to ask instead of the saved one
+  -h, --help     Show this message and exit.

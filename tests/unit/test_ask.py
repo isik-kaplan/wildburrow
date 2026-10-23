@@ -27,6 +27,49 @@ def test_only_a_terminal_on_both_ends_is_interactive(
     assert ask.interactive() is expected
 
 
+@pytest.mark.parametrize("value", ["1", "true", " YES ", "on"])
+def test_no_input_in_the_environment_turns_questions_off(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setattr("sys.stdin", Terminal(True))
+    monkeypatch.setattr("sys.stdout", Terminal(True))
+    monkeypatch.setenv(ask.NO_INPUT, value)
+    assert ask.interactive() is False
+    with pytest.raises(click.ClickException, match=r"^a password is needed, and questions are off \(--no-input or "):
+        ask.password("password: ")
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "maybe"])
+def test_other_no_input_values_leave_questions_on(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setattr("sys.stdin", Terminal(True))
+    monkeypatch.setattr("sys.stdout", Terminal(True))
+    monkeypatch.setenv(ask.NO_INPUT, value)
+    monkeypatch.setattr("getpass.getpass", lambda prompt: f"typed at {prompt}")
+    assert ask.interactive() is True
+    assert ask.password("p: ") == "typed at p: "
+
+
+def test_turning_questions_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", Terminal(True))
+    monkeypatch.setattr("sys.stdout", Terminal(True))
+    ask.turn_off()
+    assert ask.interactive() is False
+    with pytest.raises(click.ClickException):
+        ask.password("password: ")
+
+
+@pytest.mark.parametrize(("answer", "problem"), [("x", None), ("  ", "required"), ("", "required")])
+def test_required_answers(answer: str, problem: str | None) -> None:
+    assert ask.required(answer) == problem
+
+
+@pytest.mark.parametrize(
+    ("answer", "problem"),
+    [("1", None), (" 22 ", None), ("65535", None), ("0", "a port number"), ("65536", "a port number"),
+     ("x", "a port number"), ("", "a port number"), ("-1", "a port number")],
+)  # fmt: skip
+def test_port_answers(answer: str, problem: str | None) -> None:
+    assert ask.port(answer) == problem
+
+
 def test_text_strips_and_keeps_the_default(typed: Typist) -> None:
     typed("  spaced  ", ENTER, ENTER)
     assert ask.text("first") == "spaced"

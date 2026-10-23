@@ -12,6 +12,7 @@ from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.names import Name
 from wildburrow.core.registry import Registry
+from wildburrow.core.sessions import Session
 from wildburrow.core.types import Identity, PasswordCredential, Peer, PublicKeyCredential, bound_port
 
 log = logging.getLogger(__name__)
@@ -39,8 +40,9 @@ def load_host_key(path: Path) -> asyncssh.SSHKey:
 
 
 class SSHTunnel:
-    def __init__(self, conn: asyncssh.SSHServerConnection, identity: Identity, host: str, port: int) -> None:
-        self.identity = identity
+    def __init__(self, conn: asyncssh.SSHServerConnection, session: Session, host: str, port: int) -> None:
+        self.identity = session.identity
+        self.session: Session | None = session
         self._conn = conn
         self._host = host
         self._port = port
@@ -72,6 +74,7 @@ class _Client(asyncssh.SSHServer):
         self._ctx = ctx
         self._live = live
         self._identity: Identity | None = None
+        self._session: Session | None = None
         self._closed = False
         self._pending: list[str] = []
         self._process: asyncssh.SSHServerProcess | None = None
@@ -85,6 +88,12 @@ class _Client(asyncssh.SSHServer):
     def connection_lost(self, exc: Exception | None) -> None:
         self._closed = True
         self._live.discard(self._conn)
+        if self._session is not None:
+            self._ctx.sessions.close(self._session)
+
+    def auth_completed(self) -> None:
+        assert self._identity is not None  # noqa: S101
+        self._session = self._ctx.sessions.open(self._identity, "ssh", self._peer, self.end)
 
     def begin_auth(self, username: str) -> bool:
         return True
@@ -110,12 +119,12 @@ class _Client(asyncssh.SSHServer):
         return True
 
     async def server_requested(self, listen_host: str, listen_port: int) -> _Listener | bool:
-        assert self._identity is not None  # noqa: S101
+        assert self._session is not None  # noqa: S101
         if listen_host in UNNAMED:
             self.reject("give the tunnel a name, e.g. -R myapp:80:localhost:3000")
             return False
         port = listen_port or 80
-        tunnel = SSHTunnel(self._conn, self._identity, listen_host, port)
+        tunnel = SSHTunnel(self._conn, self._session, listen_host, port)
         try:
             name = await self._ctx.bind(listen_host, tunnel, self.notify)
         except BindRejected as exc:
@@ -125,7 +134,7 @@ class _Client(asyncssh.SSHServer):
             self._ctx.registry.unbind(name, tunnel)
             # The connection is gone, so nothing reads this answer.
             return False  # pragma: no mutate
-        log.info("%s bound %s from %s", self._identity.name, name, self._peer.host)
+        log.info("%s bound %s from %s", tunnel.identity.name, name, self._peer.host)
         self.notify(f"{protocol.READY}{self._ctx.url(name)}")
         return _Listener(self._ctx.registry, name, tunnel, port)
 
@@ -142,6 +151,11 @@ class _Client(asyncssh.SSHServer):
         self._rejected = True
         if self._process is not None:
             self._process.exit(1)
+
+    def end(self, reason: str) -> None:
+        """Ends the connection, its forwards and all, after saying why on the session if there is one."""
+        self.reject(f"{protocol.ENDED}{reason}")
+        self._conn.close()
 
     def attach(self, process: asyncssh.SSHServerProcess) -> None:
         self._process = process

@@ -10,6 +10,8 @@ Each page covers one part: what it does, how to use it, and what to know.
   or none, `wildburrow names`, and several local sites behind one router
 - [tokens.md](tokens.md) - signed tokens to let people in without an SSH key on the server: minting, scoping by name,
   expiry, and ending them early
+- [sessions.md](sessions.md) - who is connected, `wildburrow tunnels` and `kick`, tunnels ending with their token, and
+  who may see and end whose sessions
 
 ## Running a server
 

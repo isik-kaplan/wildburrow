@@ -18,8 +18,9 @@ from wildburrow.cli.server import (
     overlay,
     settings_groups,
 )
-from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET
+from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET, ServerSettings
 from wildburrow.core.names import LABEL
+from wildburrow.core.sessions import LEVELS
 from wildburrow.service import (
     DATA_DIR,
     ENV_PATH,
@@ -37,6 +38,20 @@ ACME_EMAIL = f"{PREFIX}ACME_EMAIL"
 TRANSPORTS = f"{PREFIX}TRANSPORTS"
 AUTH = f"{PREFIX}AUTH"
 KEYS = f"{PREFIX}AUTH_KEY_AUTHORIZED_KEYS"
+ADMINS = f"{PREFIX}ADMINS"
+SEE = f"{PREFIX}SEE"
+KICK = f"{PREFIX}KICK"
+ADMIN_CHOICES = {
+    "signers": "signers: keys that also sign tokens",
+    "key": "key: every key allowed to open tunnels",
+    "none": "none: no one",
+}
+REACH = {
+    "own": "only their own",
+    "admins": "their own, and admins anyone's who isn't an admin",
+    "all": "their own, and admins anyone's",
+    "none": "none at all",
+}
 AUTHORIZED_KEYS = Path(".ssh/authorized_keys")
 TRANSPORT_CHOICES = {
     "ssh": "ssh: clients connect on port 2222",
@@ -108,15 +123,11 @@ def _ask_dns(settings: dict[str, str], current: dict[str, str]) -> None:
         label = field.name.replace("_", " ")
         if field.metadata.get(SECRET):
             kept = " (empty keeps the current one)" if var in current else ""
-            settings[var] = ask.secret(f"{dns} {label}{kept}", None if kept else _required) or current[var]
+            settings[var] = ask.secret(f"{dns} {label}{kept}", None if kept else ask.required) or current[var]
         else:
-            settings[var] = ask.text(f"{dns} {label}", current.get(var, ""), _required)
+            settings[var] = ask.text(f"{dns} {label}", current.get(var, ""), ask.required)
     if email := ask.text("E-mail for the certificate authority (optional)", current.get(ACME_EMAIL, "")):
         settings[ACME_EMAIL] = email
-
-
-def _required(answer: str) -> str | None:
-    return None if answer.strip() else "required"
 
 
 def _ask_keys(settings: dict[str, str], current: dict[str, str], home: Path) -> None:
@@ -131,6 +142,30 @@ def _ask_keys(settings: dict[str, str], current: dict[str, str], home: Path) -> 
     settings[KEYS] = Path(path).expanduser().read_text().strip()
 
 
+def _pick(question: str, choices: dict[str, str], current: str) -> str:
+    """One of `choices`, starting from `current`, which stays on offer when set to something else."""
+    return ask.choose(question, {current: current} | choices if current not in choices else choices, current)
+
+
+def _ask_access(settings: dict[str, str]) -> None:
+    defaults = {field.name: field.default for field in dataclasses.fields(ServerSettings)}
+    # The default is one rule, so no separator ever shows in it.
+    admins = ",".join(defaults["admins"])  # pragma: no mutate
+    defaults = {ADMINS: admins, SEE: defaults["see"], KICK: defaults["kick"]}
+    current = {var: settings.get(var, default) for var, default in defaults.items()}
+    answers = {ADMINS: _pick("Admins", ADMIN_CHOICES, current[ADMINS])}
+    answers[SEE] = _pick("Sessions people see", {key: f"{key}: {text}" for key, text in REACH.items()}, current[SEE])
+    # No one may end what they can't see, so ending is offered only as far as seeing goes.
+    allowed = {key: f"{key}: {REACH[key]}" for key in REACH if LEVELS[key] <= LEVELS[answers[SEE]]}
+    kick = current[KICK] if current[KICK] in allowed else next(iter(allowed))
+    answers[KICK] = _pick("Sessions people can end", allowed, kick)
+    for var, answer in answers.items():
+        if answer == defaults[var]:
+            settings.pop(var, None)
+        else:
+            settings[var] = answer
+
+
 def _ask_settings(current: dict[str, str], home: Path) -> dict[str, str]:
     settings = dict(current)
     settings[DOMAIN] = ask.text("Domain the tunnels live under", current.get(DOMAIN, ""), _domain).lower()
@@ -138,6 +173,7 @@ def _ask_settings(current: dict[str, str], home: Path) -> dict[str, str]:
     transports = current.get(TRANSPORTS, "ssh")
     settings[TRANSPORTS] = ask.choose("Transports", {transports: transports} | TRANSPORT_CHOICES, transports)
     _ask_keys(settings, current, home)
+    _ask_access(settings)
     return settings
 
 

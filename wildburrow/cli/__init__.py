@@ -5,33 +5,52 @@ from typing import Any
 
 import click
 
-from wildburrow.cli import client, server, service, tokens
+from wildburrow.cli import ask, client, menu, server, service, tokens
 from wildburrow.service import ServiceError
 
 PROG = "wildburrow"
 CONTEXT = {"help_option_names": ["-h", "--help"], "max_content_width": 100}
+NO_INPUT = "--no-input"
 
 
 class _Tunnels(click.Group):
     """`wildburrow 3000 myapp` is `wildburrow connect 3000 myapp`."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        if args and args[0] not in self.commands and not args[0].startswith("-"):
-            args = ["connect", *args]
+        start = int(bool(args) and args[0] == NO_INPUT)
+        if len(args) > start and args[start] not in self.commands and not args[start].startswith("-"):
+            args = [*args[:start], "connect", *args[start:]]
         return super().parse_args(ctx, args)
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         return list(self.commands)
 
 
-@click.group(cls=_Tunnels, context_settings=CONTEXT)
+@click.group(cls=_Tunnels, context_settings=CONTEXT, invoke_without_command=True)
 @click.version_option(version(PROG), "--version", prog_name=PROG, message="%(version)s")
-def cli() -> None:
-    """Expose local ports on your own domain."""
+@click.option(NO_INPUT, is_flag=True, help=f"never ask anything, failing instead; also {ask.NO_INPUT}=1")
+@click.pass_context
+def cli(ctx: click.Context, no_input: bool) -> int | None:
+    """Expose local ports on your own domain. Alone in a terminal, asks what to do."""
+    return _start(ctx, no_input)
 
 
-for command in (client.connect, client.login, client.logout, client.names, server.serve, service.service,
-                server.hash_password, tokens.token, tokens.list_tokens):  # fmt: skip
+def _start(ctx: click.Context, no_input: bool) -> int | None:
+    if no_input:
+        ask.turn_off()
+    if ctx.invoked_subcommand is None:
+        return _alone(ctx)
+
+
+def _alone(ctx: click.Context) -> int:
+    if not ask.interactive():
+        click.echo(ctx.get_help(), err=True)
+        return 2
+    return menu.run()
+
+
+for command in (client.connect, client.login, client.logout, client.names, client.tunnels, client.kick,
+                server.serve, service.service, server.hash_password, tokens.token, tokens.list_tokens):  # fmt: skip
     cli.add_command(command)
 
 

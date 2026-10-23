@@ -6,9 +6,10 @@ import pytest
 
 from tests.conftest import Credentials
 from wildburrow import protocol, tokens
-from wildburrow.auth.token import SKEW_SECONDS, TokenAuth, TokenSettings
+from wildburrow.auth.token import TokenAuth, TokenSettings
 from wildburrow.client.websocket import sign
 from wildburrow.config import ConfigError
+from wildburrow.core.sessions import GRACE_SECONDS
 from wildburrow.core.types import Identity, Peer, TokenCredential
 from wildburrow.tokens import HASHED_PREFIX as PREFIX
 from wildburrow.tokens import Grant, digest, new_token
@@ -71,7 +72,7 @@ async def test_a_signed_token_logs_in_as_its_name_with_its_names(credentials: Cr
     identity = await signed_auth(credentials).authenticate(TokenCredential(mint(GRANT, credentials.key)), PEER)
     assert identity == Identity("alice", "token", "signed:alice")
     assert identity is not None
-    assert identity.names == ("alice", "*.alice")
+    assert (identity.names, identity.expires, identity.token) == (("alice", "*.alice"), NOW + 3600, "0123456789abcdef")
 
 
 async def test_a_token_that_never_expires_stays_good(credentials: Credentials) -> None:
@@ -79,12 +80,12 @@ async def test_a_token_that_never_expires_stays_good(credentials: Credentials) -
     auth = signed_auth(credentials, now=NOW * 10)
     identity = await auth.authenticate(TokenCredential(mint(grant, credentials.key)), PEER)
     assert identity is not None
-    assert identity.names is None
+    assert (identity.names, identity.expires) == (None, None)
 
 
 @pytest.mark.parametrize(
     ("now", "accepted"),
-    [(NOW + 3600, True), (NOW + 3600 + SKEW_SECONDS, True), (NOW + 3600 + SKEW_SECONDS + 1, False)],
+    [(NOW + 3600, True), (NOW + 3600 + GRACE_SECONDS, True), (NOW + 3600 + GRACE_SECONDS + 1, False)],
 )
 async def test_an_expired_token_is_refused_past_the_clock_skew(
     credentials: Credentials, now: float, accepted: bool

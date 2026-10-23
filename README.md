@@ -20,6 +20,8 @@ wildburrow login tunnel.example.com
 wildburrow 3000 myapp '*.myapp'    # https://myapp.tunnel.example.com and https://<anything>.myapp.tunnel.example.com
 ```
 
+`wildburrow` alone, in a terminal, asks what to do.
+
 ## Documentation
 
 The full index is [docs/INDEX.md](https://github.com/isik-kaplan/wildburrow/blob/master/docs/INDEX.md).
@@ -30,6 +32,8 @@ The full index is [docs/INDEX.md](https://github.com/isik-kaplan/wildburrow/blob
   `wildburrow names`, several local sites behind one router
 - [Tokens](https://github.com/isik-kaplan/wildburrow/blob/master/docs/tokens.md) - letting people in with tokens you
   mint and sign yourself
+- [Sessions](https://github.com/isik-kaplan/wildburrow/blob/master/docs/sessions.md) - who is connected, ending
+  sessions, and admins
 - [Server](https://github.com/isik-kaplan/wildburrow/blob/master/docs/server.md) - the service, HTTPS, Docker and
   Traefik
 - [Settings](https://github.com/isik-kaplan/wildburrow/blob/master/docs/settings.md) - every setting

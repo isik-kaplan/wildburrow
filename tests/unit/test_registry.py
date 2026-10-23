@@ -6,6 +6,7 @@ from hypothesis import strategies as st
 
 from wildburrow.core.names import Name
 from wildburrow.core.registry import NameTaken, Registry
+from wildburrow.core.sessions import Session
 from wildburrow.core.types import Identity
 
 label = st.sampled_from(["a", "b", "c"])
@@ -17,6 +18,7 @@ names = st.lists(
 @dataclass(eq=False)
 class FakeTunnel:
     identity: Identity
+    session: Session | None = None
 
     async def open_stream(self, peer):
         raise NotImplementedError

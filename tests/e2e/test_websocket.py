@@ -349,7 +349,7 @@ async def test_the_transport_takes_direct_connections(
     )
     async with await raw_control(running) as ws:
         await ws.send(protocol.encode("hello", method="token", token=TOKEN))
-        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": "ci"}
+        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": "ci", "features": ["sessions"]}
 
 
 async def test_other_root_paths_are_not_found(start_server: StartServer, ws_env) -> None:
@@ -517,7 +517,7 @@ async def test_key_logins_answer_a_fresh_challenge_for_this_server(
     await asyncio.wait_for(second.wait_closed(), TIMEOUT)
     assert (second.close_code, second.close_reason) == (protocol.CLOSE_AUTH_FAILED, "authentication failed")
     await first.send(protocol.encode("signature", signature=signature))
-    assert protocol.decode(await first.recv()) == {"type": "welcome", "identity": "laptop"}
+    assert protocol.decode(await first.recv()) == {"type": "welcome", "identity": "laptop", "features": ["sessions"]}
     await first.close()
 
 
@@ -532,7 +532,7 @@ async def test_logins_are_welcomed_by_name(start_server: StartServer, ws_env, he
     running = await start_server(**ws_env)
     async with await raw_control(running) as ws:
         await ws.send(protocol.encode("hello", **hello))
-        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": identity}
+        assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": identity, "features": ["sessions"]}
 
 
 async def test_binds_are_answered_in_full(start_server: StartServer, ws_env, caplog: pytest.LogCaptureFixture) -> None:

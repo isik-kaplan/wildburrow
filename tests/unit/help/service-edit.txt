@@ -12,6 +12,9 @@ Server:
   --client-transport CLIENT_TRANSPORT
                                   default: the first clients can log in over
   --client-auth CLIENT_AUTH       default: its first method in AUTH
+  --admins ADMINS                 default: signers
+  --see SEE                       default: own
+  --kick KICK                     default: own
   --http-host HTTP_HOST           default: 0.0.0.0
   --http-port HTTP_PORT           default: 80
   --max-depth MAX_DEPTH           default: 5
