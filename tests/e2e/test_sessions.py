@@ -108,6 +108,20 @@ async def test_an_ssh_tunnel_is_ended_over_websocket(
     await gone(running)
 
 
+async def test_an_ssh_tunnel_without_a_session_is_ended_too(
+    start_server: StartServer, credentials: Credentials, backend: Backend, connect: Connect, env: dict[str, str]
+) -> None:
+    running = await start_server(**env)
+    ssh = await connect(running.ssh_port, "key", "-N", "-R", f"app:80:127.0.0.1:{backend.port}")
+    async with asyncio.timeout(TIMEOUT):
+        while not running.server.ctx.registry.names():
+            await asyncio.sleep(0.01)
+    answer = await websocket.kick(client_config(credentials, "key"), {"name": "app"}, connector=local(running))
+    assert len(answer["sessions"]) == 1
+    assert await ssh.wait() != 0
+    await gone(running)
+
+
 async def test_others_are_out_of_reach(
     start_server: StartServer, credentials: Credentials, backend: Backend, connect: Connect, env: dict[str, str]
 ) -> None:

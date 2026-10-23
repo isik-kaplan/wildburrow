@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -19,6 +21,8 @@ log = logging.getLogger(__name__)
 
 HOST_KEY_FILE = "ssh_host_ed25519_key"
 UNNAMED = {"", "localhost"}
+# How long an ended session's client gets to read why before its connection is dropped anyway.
+CLOSE_GRACE_SECONDS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +82,7 @@ class _Client(asyncssh.SSHServer):
         self._closed = False
         self._pending: list[str] = []
         self._process: asyncssh.SSHServerProcess | None = None
+        self._ending: asyncio.Task[None] | None = None
         self._rejected = False
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
@@ -155,6 +160,18 @@ class _Client(asyncssh.SSHServer):
     def end(self, reason: str) -> None:
         """Ends the connection, its forwards and all, after saying why on the session if there is one."""
         self.reject(f"{protocol.ENDED}{reason}")
+        if self._process is None:
+            self._conn.close()
+        else:
+            closing = asyncio.create_task(self._close_after(self._process))
+            # Only keeps the task from being collected before it closes the connection.
+            self._ending = closing  # pragma: no mutate
+
+    async def _close_after(self, process: asyncssh.SSHServerProcess) -> None:
+        # Closing at once can beat the reason to the client, so the session channel closes first.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(CLOSE_GRACE_SECONDS):
+                await process.wait_closed()
         self._conn.close()
 
     def attach(self, process: asyncssh.SSHServerProcess) -> None:
