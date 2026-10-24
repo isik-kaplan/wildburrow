@@ -1,13 +1,12 @@
 import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 import click
 
-from wildburrow import tokens
+from wildburrow import durations, tokens
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
 from wildburrow.cli.output import NEVER, table, when
@@ -15,10 +14,9 @@ from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config
 from wildburrow.config import PREFIX
 from wildburrow.core.names import ANY, InvalidName, parse_patterns
+from wildburrow.durations import UNITS
 
 DEFAULT_EXPIRY = "7d"
-UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
-DURATION = re.compile(r"([1-9][0-9]*)([mhdw])")
 DENY = f"{PREFIX}AUTH_TOKEN_DENY"
 SERVER_PLACEHOLDER = "SERVER"
 
@@ -31,9 +29,9 @@ def log_path() -> Path:
 def _expiry(raw: str, now: int) -> int | None:
     if raw.strip().lower() == NEVER:
         return None
-    if not (match := DURATION.fullmatch(raw.strip().lower())):
+    if (length := durations.seconds(raw)) is None:
         raise Failure(f"--expires: expected a count and one of {', '.join(UNITS)} (like 7d or 12h), or {NEVER}", 2)
-    return now + int(match[1]) * UNITS[match[2]]
+    return now + length
 
 
 def _scope(names: tuple[str, ...] | None) -> str:

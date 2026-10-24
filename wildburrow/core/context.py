@@ -6,10 +6,12 @@ from typing import TYPE_CHECKING, Any
 
 from wildburrow.auth.base import Authenticator
 from wildburrow.core.errors import BindRejected
-from wildburrow.core.names import Name, allows, parse_name
+from wildburrow.core.locks import Lock, Locking, build
+from wildburrow.core.names import InvalidName, Name, allows, host_labels, parse_name
 from wildburrow.core.registry import NameTaken, Registry
-from wildburrow.core.sessions import Policy, Session, Sessions, describe
-from wildburrow.core.types import Destination, Tunnel
+from wildburrow.core.sessions import Policy, Session, Sessions, describe, same
+from wildburrow.core.types import Destination, Identity, Tunnel
+from wildburrow.locks import LABEL, next_links, safe_path
 
 if TYPE_CHECKING:
     from wildburrow.certs.manager import CertManager
@@ -34,6 +36,9 @@ class ServerContext:
     registry: Registry = field(default_factory=Registry)
     sessions: Sessions = field(default_factory=Sessions)
     policy: Policy = field(default_factory=Policy)
+    locking: Locking = field(default_factory=Locking)
+    # Every lock by its id, for the server's own domain to find the ones homed there.
+    locks: dict[str, Lock] = field(default_factory=dict)
     certs: CertManager | None = None
     root: Destination | None = None
     # What clients are told about logging in, published once the transports know their ports.
@@ -128,3 +133,69 @@ class ServerContext:
 
     def url(self, name: Name) -> str:
         return f"{'https' if self.certs else 'http'}://{name.fqdn(self.domain)}"
+
+    def lock(
+        self, tunnel: Tunnel, raws: Sequence[str], spec: Any, changed: Callable[[dict[str, Any]], None]
+    ) -> list[dict[str, str]]:
+        """Locks `tunnel` as `spec` asks, before any of `raws` is bound to it; returns the links minted for it."""
+        if tunnel.lock is not None:
+            raise BindRejected("this tunnel is already locked")
+        plain = []
+        for raw in raws:
+            try:
+                name = parse_name(raw, self.domain, self.max_depth)
+            except InvalidName:
+                continue
+            if not name.wildcard:
+                plain.append(name.fqdn(self.domain))
+        home = plain[0] if plain else self.domain
+        try:
+            lock, minted = build(spec, home, not plain, self.certs is not None, self.locking, changed)
+        except ValueError as exc:
+            raise BindRejected(f"lock: {exc}") from None
+        tunnel.lock = self.locks[lock.id] = lock
+        return [{"label": label, "url": lock.link_url(key)} for label, key in minted]
+
+    def unlock(self, tunnel: Tunnel) -> None:
+        if (lock := tunnel.lock) is not None and self.locks.get(lock.id) is lock:
+            del self.locks[lock.id]
+
+    def _locked(self, actor: Identity) -> list[tuple[Tunnel, Lock]]:
+        """The locked tunnels of `actor`'s own identity, each once, with their locks."""
+        found = {id(tunnel): tunnel for tunnel in self.registry.holders().values()}
+        return [
+            (tunnel, tunnel.lock)
+            for tunnel in found.values()
+            if tunnel.lock is not None and same(actor, tunnel.identity)
+        ]
+
+    def _held(self, tunnel: Tunnel) -> list[str]:
+        return [str(name) for name, holder in self.registry.holders().items() if holder is tunnel]
+
+    def logins(self, actor: Identity) -> list[dict[str, Any]]:
+        """Who may get into each of `actor`'s locked tunnels, and who has."""
+        return [{"names": self._held(tunnel), "logins": lock.listing()} for tunnel, lock in self._locked(actor)]
+
+    def mint(self, actor: Identity, request: dict[str, Any]) -> dict[str, Any]:
+        """One more link to a locked tunnel of `actor`'s, landing on the URL `request` names."""
+        address = str(request["url"]).strip()
+        host, _, path = address.split("://", 1)[-1].partition("/")
+        host, path = host.partition(":")[0].lower(), f"/{path}"
+        labels = host_labels(host, self.domain)
+        tunnel = None if labels is None else self.registry.resolve(labels)
+        if tunnel is None or tunnel.lock is None or not same(actor, tunnel.identity):
+            return {"error": f"no locked tunnel of yours serves {host or address!r}"}
+        if not safe_path(path):
+            return {"error": f"a link can't land on {path!r}"}
+        lock = tunnel.lock
+        [label] = [str(request["label"])] if request.get("label") else next_links(lock.entries, 1)
+        if not LABEL.fullmatch(label) or label in lock.entries:
+            return {"error": f"{label!r} is taken or can't name a login"}
+        expires = request.get("expires")
+        key = lock.mint(label, host, path, expires if isinstance(expires, int) else None)
+        return {"label": label, "url": lock.link_url(key)}
+
+    def end_login(self, actor: Identity, who: str) -> dict[str, Any]:
+        """Ends `who`'s password or link in every locked tunnel of `actor`'s, logging out whoever used it."""
+        ended = [self._held(tunnel) for tunnel, lock in self._locked(actor) if lock.end(who)]
+        return {"who": who, "ended": ended}

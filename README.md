@@ -20,7 +20,8 @@ wildburrow login tunnel.example.com
 wildburrow 3000 myapp '*.myapp'    # https://myapp.tunnel.example.com and https://<anything>.myapp.tunnel.example.com
 ```
 
-`wildburrow` alone, in a terminal, asks what to do.
+`wildburrow` alone, in a terminal, asks what to do. Add `--lock alice:pw` or `--link` to let in only the people you
+choose, with a password or a one-time link.
 
 ## Documentation
 
@@ -32,6 +33,8 @@ The full index is [docs/INDEX.md](https://github.com/isik-kaplan/wildburrow/blob
   `wildburrow names`, several local sites behind one router
 - [Tokens](https://github.com/isik-kaplan/wildburrow/blob/master/docs/tokens.md) - letting people in with tokens you
   mint and sign yourself
+- [Locks](https://github.com/isik-kaplan/wildburrow/blob/master/docs/locks.md) - passwords and one-time links in
+  front of a tunnel
 - [Sessions](https://github.com/isik-kaplan/wildburrow/blob/master/docs/sessions.md) - who is connected, ending
   sessions, and admins
 - [Server](https://github.com/isik-kaplan/wildburrow/blob/master/docs/server.md) - the service, HTTPS, Docker and

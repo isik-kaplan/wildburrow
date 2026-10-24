@@ -46,6 +46,22 @@ Server:
   --proxy-trusted PROXY_TRUSTED   default: 127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.
                                   0/16,fc00::/7
 
+Locks:
+  --lock-path PATH                default: /_wildburrow/login
+  --lock-cookie COOKIE            default: wildburrow
+  --lock-header HEADER            default: X-Wildburrow-Auth
+  --lock-user-header USER_HEADER  default: X-Wildburrow-User
+  --lock-expires EXPIRES          default: when the browser closes
+  --lock-confirm-links / --no-lock-confirm-links
+                                  default: on
+  --lock-page PAGE                default: built in
+  --lock-link-page LINK_PAGE      default: built in
+  --lock-message-page MESSAGE_PAGE
+                                  default: built in
+  --lock-attempts ATTEMPTS        default: 10
+  --lock-code-expires CODE_EXPIRES
+                                  default: 10m
+
 transport plugin ssh:
   --ssh-host HOST                 default: 0.0.0.0
   --ssh-port PORT                 default: 2222

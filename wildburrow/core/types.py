@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from wildburrow.core.locks import Lock
     from wildburrow.core.sessions import Session
 
 
@@ -72,6 +73,8 @@ class Tunnel(Destination, Protocol):
     identity: Identity
     # The login it came from; None for one no session tracks.
     session: Session | None
+    # What visitors need before they reach it; None for an open tunnel.
+    lock: Lock | None
 
 
 def bound_port(server: Any) -> int:

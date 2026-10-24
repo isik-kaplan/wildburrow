@@ -3,16 +3,33 @@ Usage: wildburrow connect [OPTIONS] PORT NAME...
   Tunnel a local port (the default command): wildburrow 3000 myapp '*.foo'
 
 Options:
-  --server TEXT                 server to use instead of the saved one
-  --local-host TEXT             where the local port listens  [default: localhost]
-  --ssh-port INTEGER            (default: 2222)
-  --user TEXT                   SSH user (default: your local user)
-  --transport [ssh|websocket]   (default: ssh)
-  --auth [key|password|token]   (default: key)
-  --identity TEXT               SSH key for websocket
-  --url TEXT                    websocket base URL override
-  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
-  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
-                                (default: 1)
-  --retry-max SECONDS           longest wait between reconnects (default: 30)
-  -h, --help                    Show this message and exit.
+  --server TEXT                   server to use instead of the saved one
+  --local-host TEXT               where the local port listens  [default: localhost]
+  --ssh-port INTEGER              (default: 2222)
+  --user TEXT                     SSH user (default: your local user)
+  --transport [ssh|websocket]     (default: ssh)
+  --auth [key|password|token]     (default: key)
+  --identity TEXT                 SSH key for websocket
+  --url TEXT                      websocket base URL override
+  --reconnect / --no-reconnect    reconnect when the connection drops (default: on)
+  --retry-delay SECONDS           first wait before reconnecting, doubled after each failure
+                                  (default: 1)
+  --retry-max SECONDS             longest wait between reconnects (default: 30)
+  --lock [USER[:PASSWORD]]        let USER in with PASSWORD, asked for or made up when left out;
+                                  alone, makes up both; repeatable
+  --link [N|LABELS]               one-time links: one alone, N of them, or one per comma-separated
+                                  label; repeatable
+  --link-expires DURATION         links stop working after this long (default: with the tunnel)
+  --lock-path PATH                login path on the tunnel's hosts (default: the server's)
+  --lock-cookie NAME              login cookie's name (default: the server's)
+  --lock-header HEADER            header scripts log in with, as USER:PASSWORD (default: the
+                                  server's)
+  --lock-user-header HEADER       header telling your app who logged in (default: the server's)
+  --lock-expires DURATION         how long a login lasts, like 12h (default: the server's)
+  --lock-confirm-links / --no-lock-confirm-links
+                                  have a link wait for a click, so chat previews don't use it up
+                                  (default: the server's)
+  --lock-page FILE                your own login page (default: the server's)
+  --lock-link-page FILE           your own page for opening a link (default: the server's)
+  --lock-message-page FILE        your own page for the lock's messages (default: the server's)
+  -h, --help                      Show this message and exit.

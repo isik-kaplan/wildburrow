@@ -8,16 +8,18 @@ from datetime import timedelta
 from importlib.metadata import version
 from typing import Any, Self
 
-from wildburrow import config, plugins
+from wildburrow import config, durations, plugins
 from wildburrow.auth.base import Authenticator
 from wildburrow.certs.acme import ACMEIssuer
 from wildburrow.certs.manager import CertManager, server_context
 from wildburrow.certs.store import CertStore
 from wildburrow.core.context import ServerContext
+from wildburrow.core.locks import Locking
 from wildburrow.core.names import LABEL
 from wildburrow.core.sessions import Admins, Policy, level
 from wildburrow.edge import proxy
 from wildburrow.edge.http import Edge, Mode
+from wildburrow.locks import FIELDS, LOCK_PREFIX, LockSettings, ServerLockSettings, problems
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class Server:
             data_dir=settings.data_dir,
             authenticator=authenticator,
             policy=policy(settings, authenticator),
+            locking=locking(env),
         )
         self.loaded: dict[str, Any] = {name: plugins.load("transport", name, env) for name in settings.transports}
         self.transports: list[Any] = list(self.loaded.values())
@@ -129,6 +132,22 @@ def policy(settings: config.ServerSettings, authenticator: Authenticator) -> Pol
     admins = Admins.parse(f"{config.PREFIX}ADMINS", settings.admins, settings.auth, authenticator.signers())
     see, kick = level(f"{config.PREFIX}SEE", settings.see), level(f"{config.PREFIX}KICK", settings.kick)
     return Policy(admins, see, kick)
+
+
+def locking(env: Mapping[str, str]) -> Locking:
+    """What every lock starts from, as the operator set it."""
+    loaded = config.load(ServerLockSettings, env, LOCK_PREFIX)
+    found = problems(loaded, lambda name: f"{LOCK_PREFIX}{name.upper()}")
+    if (code_seconds := durations.seconds(loaded.code_expires)) is None:
+        found.append(
+            f"{LOCK_PREFIX}CODE_EXPIRES: expected a duration {durations.EXAMPLES}, got {loaded.code_expires!r}"
+        )
+    if loaded.attempts < 1:
+        found.append(f"{LOCK_PREFIX}ATTEMPTS: must be at least 1")
+    if found:
+        raise config.ConfigError("; ".join(found))
+    settings = LockSettings(**{name: getattr(loaded, name) for name in FIELDS})
+    return Locking(settings, loaded.attempts, code_seconds)
 
 
 def client_defaults(settings: config.ServerSettings, offered: Mapping[str, list[str]]) -> dict[str, str]:

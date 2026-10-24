@@ -14,6 +14,7 @@ from wildburrow import envfile
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
 from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET, SHOWN
+from wildburrow.locks import LOCK_PREFIX, ServerLockSettings
 
 SERVER_EXTRA = "the server needs extra dependencies: install 'wildburrow[server]'"
 GROUPS = "wildburrow.settings"
@@ -40,7 +41,10 @@ def settings_groups() -> list[SettingsGroup]:
         from wildburrow import plugins
         from wildburrow.config import ServerSettings
 
-        groups = [SettingsGroup("Server", ServerSettings, PREFIX)]
+        groups = [
+            SettingsGroup("Server", ServerSettings, PREFIX),
+            SettingsGroup("Locks", ServerLockSettings, LOCK_PREFIX),
+        ]
         for kind in plugins.KINDS:
             for name, entry_point in sorted(plugins.available(kind).items()):
                 groups.append(

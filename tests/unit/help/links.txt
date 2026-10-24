@@ -1,0 +1,8 @@
+Usage: wildburrow links [OPTIONS]
+
+  List who may get into your locked tunnels, and who has. Logs in as a tunnel would.
+
+Options:
+  --end WHO      end this password or link, logging out whoever used it
+  --server TEXT  server to ask instead of the saved one
+  -h, --help     Show this message and exit.

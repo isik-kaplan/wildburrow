@@ -11,6 +11,7 @@ from websockets.frames import Close
 from wildburrow import protocol
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig
+from wildburrow.client.locking import LockRequest
 from wildburrow.client.retry import Backoff
 from wildburrow.client.websocket import Client, ClientError, hello, identity_file, sign, websocket_base
 
@@ -328,16 +329,20 @@ def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> 
 
     class Recording:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            seen.append(args)
+            seen.append((*args, kwargs.get("lock")))
 
         async def run(self) -> int:
             return 5
 
     monkeypatch.setattr(websocket, "Client", Recording)
     config = ClientConfig("s", auth="token", url="http://s")
+    lock = LockRequest({"alice": "x"})
     assert websocket.run(config, 9, ["a"], "127.0.0.1") == 5
-    assert websocket.run(config, 9, ["a"], "127.0.0.1", str.upper) == 5
-    assert seen == [(config, 9, ["a"], "127.0.0.1", getpass.getpass), (config, 9, ["a"], "127.0.0.1", str.upper)]
+    assert websocket.run(config, 9, ["a"], "127.0.0.1", str.upper, lock) == 5
+    assert seen == [
+        (config, 9, ["a"], "127.0.0.1", getpass.getpass, None),
+        (config, 9, ["a"], "127.0.0.1", str.upper, lock),
+    ]
 
 
 class FakeWS:
@@ -583,3 +588,93 @@ async def test_held_names_asks_the_password_and_connects_for_real_by_default(mon
         await websocket.held_names(ClientConfig("s", user="me", auth="password", url="http://s"))
     assert prompts == ["password: "]
     assert control.sent[0] == {"type": "hello", "method": "password", "username": "me", "password": "pw"}
+
+
+def welcomed_with(*features: str) -> str:
+    return protocol.encode("welcome", identity="ci", features=list(features))
+
+
+async def test_a_locked_tunnel_needs_a_server_that_locks() -> None:
+    lines: list[str] = []
+    lock = LockRequest({"alice": "x"})
+    connector = fake_connector(FakeControl([welcomed_with(protocol.SESSIONS)]))
+    config = ClientConfig("s", auth="token", token="t", url="http://s")
+    locked = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=connector, lock=lock)
+    assert await locked.run() == 1
+    assert lines == ["error: s runs an older wildburrow; this needs 0.4.0 or later"]
+
+
+async def test_a_locked_tunnel_keeps_what_the_server_says() -> None:
+    lines: list[str] = []
+    lock = LockRequest({"alice": "x"}, mint=[{"label": "l", "expires": None}])
+    state = {"links": {"l": {"key": "k"}}, "ended": []}
+    later = {"links": {"l": {"key": "k", "used": 5}}, "ended": ["alice"]}
+    control = FakeControl([
+        welcomed_with(protocol.SESSIONS, protocol.LOCK),
+        protocol.encode("bound", name="app", url="u"),
+        protocol.encode("locked", links=[{"label": "l", "url": "http://l"}], state=state),
+        protocol.encode("lock-state", state=later),
+    ])  # fmt: skip
+    connector = fake_connector(control)
+    config = ClientConfig("s", auth="token", token="t", url="http://s")
+    locked = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=connector, lock=lock, backoff=NO_WAIT)
+    assert await locked.run() == 1
+    assert control.sent[1] == {
+        "type": "bind",
+        "names": ["app"],
+        "lock": {
+            "secret": lock.secret, "users": {"alice": "x"}, "links": {}, "ended": [],
+            "mint": [{"label": "l", "expires": None}], "settings": {},
+        },
+    }  # fmt: skip
+    assert lines[:5] == ["connected as ci", "ready: u", "locked:", "  alice  password: x", "  l      http://l"]
+    assert (lock.state, lock.mint) == (later, [])
+
+
+@pytest.mark.parametrize(
+    ("request_server", "sent", "answer"),
+    [
+        (
+            lambda c: websocket.logins(TOKEN_CONFIG, input, c),
+            {"type": "logins"},
+            protocol.encode("logins", tunnels=[1]),
+        ),
+        (
+            lambda c: websocket.link(TOKEN_CONFIG, {"url": "u", "label": None}, input, c),
+            {"type": "link", "url": "u", "label": None},
+            protocol.encode("linked", label="link-1", url="x"),
+        ),
+        (
+            lambda c: websocket.end_login(TOKEN_CONFIG, "bob", input, c),
+            {"type": "end-login", "who": "bob"},
+            protocol.encode("ended-login", who="bob", ended=[]),
+        ),
+    ],
+    ids=["logins", "link", "end-login"],
+)
+async def test_the_login_commands_ask_a_server_that_locks(request_server: Callable, sent: dict, answer: str) -> None:
+    control = FakeControl([welcomed_with(protocol.LOCK), answer])
+    result = await request_server(fake_connector(control))
+    assert result == ([1] if sent["type"] == "logins" else protocol.decode(answer))
+    assert control.sent[1] == sent
+    older = FakeControl([welcomed_with(protocol.SESSIONS)])
+    with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.4\.0 or later$"):
+        await request_server(fake_connector(older))
+
+
+@pytest.mark.parametrize(
+    "request_server",
+    [
+        lambda config, ask, c: websocket.logins(config, ask, c),
+        lambda config, ask, c: websocket.link(config, {"url": "u"}, ask, c),
+        lambda config, ask, c: websocket.end_login(config, "bob", ask, c),
+    ],
+    ids=["logins", "link", "end-login"],
+)
+async def test_the_login_commands_ask_for_the_password(request_server: Callable) -> None:
+    prompts: list[str] = []
+    control = FakeControl([welcomed_with(protocol.LOCK)])
+    config = ClientConfig("s", user="me", auth="password", url="http://s")
+    with pytest.raises(ClientError, match="without answering"):
+        await request_server(config, lambda prompt: prompts.append(prompt) or "pw", fake_connector(control))
+    assert prompts == ["password: "]

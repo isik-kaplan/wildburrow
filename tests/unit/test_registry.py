@@ -4,6 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
 from wildburrow.core.registry import NameTaken, Registry
 from wildburrow.core.sessions import Session
@@ -19,6 +20,7 @@ names = st.lists(
 class FakeTunnel:
     identity: Identity
     session: Session | None = None
+    lock: Lock | None = None
 
     async def open_stream(self, peer):
         raise NotImplementedError

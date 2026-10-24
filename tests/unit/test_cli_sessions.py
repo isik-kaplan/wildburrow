@@ -287,7 +287,7 @@ def test_alone_with_questions_off_wildburrow_shows_its_help(terminal: None, caps
 
 
 def test_the_menu_opens_a_tunnel(typed: Typist, ran: Ran) -> None:
-    typed(ENTER, "x", ENTER, "\b", "3000", ENTER, ENTER, "app *.app", ENTER)
+    typed(ENTER, "x", ENTER, "\b", "3000", ENTER, ENTER, "app *.app", ENTER, ENTER)
     assert cli.main([]) == 7
     assert ran.calls == [("_connect", (3000, ("app", "*.app"), None, "localhost", {}))]
     assert typed.showed(

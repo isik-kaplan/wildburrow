@@ -14,6 +14,7 @@ from websockets.http11 import Request, Response
 from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
+from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
 from wildburrow.core.sessions import Session
 from wildburrow.core.types import (
@@ -96,6 +97,7 @@ class WebSocketTunnel:
     def __init__(self, transport: WebSocketTransport, outbox: _Outbox, session: Session) -> None:
         self.identity = session.identity
         self.session: Session | None = session
+        self.lock: Lock | None = None
         self._transport = transport
         self._outbox = outbox
 
@@ -183,7 +185,7 @@ class WebSocketTransport:
             await connection.close(protocol.CLOSE_AUTH_FAILED, "authentication failed")
             return
         outbox = _Outbox(connection)
-        outbox.put("welcome", identity=identity.name, features=[protocol.SESSIONS])
+        outbox.put("welcome", identity=identity.name, features=list(protocol.SINCE))
         session = self._ctx.sessions.open(identity, "websocket", peer, lambda reason: self._end(connection, reason))
         tunnel = WebSocketTunnel(self, outbox, session)
         bound: list[Name] = []
@@ -191,7 +193,7 @@ class WebSocketTransport:
             async for raw in connection:
                 message = protocol.decode(raw)
                 if message["type"] == "bind":
-                    await self._bind(outbox, tunnel, _names(message), bound)
+                    await self._bind(outbox, tunnel, message, bound)
                 elif message["type"] == "names":
                     held = self._ctx.registry.holders().items()
                     names = [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]
@@ -200,6 +202,12 @@ class WebSocketTransport:
                     outbox.put(protocol.SESSIONS, sessions=self._ctx.listing(session))
                 elif message["type"] == "kick":
                     outbox.put("kicked", **self._ctx.kick(session, message))
+                elif message["type"] == "logins":
+                    outbox.put("logins", tunnels=self._ctx.logins(identity))
+                elif message["type"] == "link":
+                    outbox.put("linked", **self._ctx.mint(identity, message))
+                elif message["type"] == "end-login":
+                    outbox.put("ended-login", **self._ctx.end_login(identity, str(message["who"])))
                 elif message["type"] == "open-failed":
                     waiter = self.pending.get(str(message["id"]))
                     if waiter is not None and not waiter.done():
@@ -213,6 +221,7 @@ class WebSocketTransport:
             self._ctx.sessions.close(session)
             for name in bound:
                 self._ctx.registry.unbind(name, tunnel)
+            self._ctx.unlock(tunnel)
             await outbox.flush_and_stop()
 
     def _end(self, connection: ServerConnection, reason: str) -> None:
@@ -221,16 +230,28 @@ class WebSocketTransport:
         self._ending.add(task)  # pragma: no mutate
         task.add_done_callback(self._ending.discard)  # pragma: no mutate
 
-    async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, raws: list[str], bound: list[Name]) -> None:
+    async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, message: dict[str, Any], bound: list[Name]) -> None:
+        raws = _names(message)
+        minted = None
         try:
+            if "lock" in message:
+                changed = lambda state: outbox.put("lock-state", state=state)  # noqa: E731
+                minted = self._ctx.lock(tunnel, raws, message["lock"], changed)
             names = await self._ctx.bind_all(raws, tunnel, lambda text: outbox.put("status", message=text))
         except BindRejected as exc:
+            if minted is not None:
+                self._ctx.unlock(tunnel)
+                tunnel.lock = None
             outbox.put("rejected", names=raws, reason=str(exc))
             return
         for name in names:
             bound.append(name)
             log.info("%s bound %s over websocket", tunnel.identity.name, name)
             outbox.put("bound", name=str(name), url=self._ctx.url(name))
+        if minted is not None:
+            assert tunnel.lock is not None  # noqa: S101
+            log.info("%s locked %s", tunnel.identity.name, ", ".join(map(str, names)))
+            outbox.put("locked", links=minted, state=tunnel.lock.state())
 
     async def _login(self, connection: ServerConnection, peer: Peer) -> Identity | None:
         hello = protocol.decode(await connection.recv())

@@ -142,3 +142,12 @@ async def test_client_gone_before_the_response(ctx) -> None:
 
 async def test_stop_before_start(ctx) -> None:
     await Edge(ctx, "127.0.0.1", 0, 1024, 1).stop()
+
+
+def test_requests_keep_their_headers_and_query() -> None:
+    request = parse_request(head("GET /a?b?c HTTP/1.1", "Host: a", "X-Pad: \x0cv\x0c ", "Cookie: a=b=c; d"))
+    assert (request.method, request.path(), request.query()) == ("GET", "/a", "b?c")
+    assert request.headers == (("Host", "a"), ("X-Pad", "\x0cv\x0c"), ("Cookie", "a=b=c; d"))
+    assert request.header("x-pad") == "\x0cv\x0c"
+    assert request.header("X-Pad") is None
+    assert request.cookies() == {"a": "b=c", "d": ""}

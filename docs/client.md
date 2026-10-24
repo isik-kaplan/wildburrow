@@ -44,6 +44,9 @@ this run only. `--local-host` is where the local port listens (default `localhos
 Requests reach your app unchanged, so websockets, server-sent events and streaming responses work as they do locally.
 With HTTPS, visitors use `wss://` and your app sees plain `ws://`.
 
+`--lock alice:pw` or `--link` locks the tunnel: visitors log in on a page the server serves, with a password or a
+one-time link, before anything reaches your app. See [locks.md](locks.md).
+
 ## Transports
 
 | Transport | How it connects | Auth methods |
@@ -51,8 +54,8 @@ With HTTPS, visitors use `wss://` and your app sees plain `ws://`.
 | `ssh` | your `ssh` binary, port 2222, one `-R` per name | `key`, `password` |
 | `websocket` | `wss://tunnel.example.com` on 443 | `key` (signed with `ssh-keygen -Y sign`), `password`, `token` |
 
-`websocket` gets through networks that only let HTTPS out. Tokens, `wildburrow names`, `tunnels` and `kick` only
-work over it.
+`websocket` gets through networks that only let HTTPS out. Tokens, locks, `wildburrow names`, `tunnels`, `kick`,
+`link` and `links` only work over it.
 
 ## Staying up
 

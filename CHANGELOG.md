@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-24
+
+### Added
+
+- **Locked tunnels.** `--lock USER[:PASSWORD]` and `--link [N|LABELS]` put a login page the server serves in front of
+  a tunnel, so nothing reaches your app until a visitor logs in with a password or a one-time link. Passwords can be
+  typed, given or made up; links wait for a click, so chat previews don't use them up. See
+  [docs/locks.md](docs/locks.md).
+- **One login covers every host of a locked tunnel**, `foo` and `*.foo` alike, carried from host to host by a one-time
+  code that works only in the browser that asked for it.
+- **Your app is told who logged in** in `X-Wildburrow-User`, and never sees the lock's own cookie or header. Scripts
+  log in with `X-Wildburrow-Auth: USER:PASSWORD`.
+- **`wildburrow link URL`** mints one more link to a locked tunnel of yours, landing on URL, and
+  **`wildburrow links`** lists who may get in and who has; `--end WHO` ends a password or link and logs out whoever
+  used it.
+- **`WILDBURROW_LOCK_*` settings** default every lock's login path, cookie and header names, login lifetime, link
+  confirmation and pages, and limit failed logins per tunnel. A client changes all but the limits for its own tunnel.
+- **`wildburrow` alone asks whether to lock** a tunnel it opens.
+
+### Changed
+
+- **A dropped connection keeps a tunnel's lock**: the client reconnects with the same logins and links.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

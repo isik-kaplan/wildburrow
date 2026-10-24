@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import re
 import ssl
-from dataclasses import dataclass
 from enum import Enum
 from http import HTTPStatus
 
@@ -10,68 +8,17 @@ from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import TunnelUnavailable
 from wildburrow.core.names import host_labels
-from wildburrow.core.types import Peer, bound_port
-from wildburrow.edge import proxy
+from wildburrow.core.types import Destination, Peer, bound_port
+from wildburrow.edge import gate, proxy
+from wildburrow.edge.messages import HEAD_END, JSON, BadRequest, parse_request, response
 from wildburrow.streams import relay
 
 log = logging.getLogger(__name__)
-
-HEAD_END = b"\r\n\r\n"
-TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
-VERSION = re.compile(r"HTTP/1\.[01]")
-WHITESPACE = " \t"
-TEXT = "text/plain; charset=utf-8"
-JSON = "application/json"
-
-
-class BadRequest(Exception):
-    pass
 
 
 class Mode(Enum):
     PROXY = "proxy"
     REDIRECT = "redirect"
-
-
-@dataclass(frozen=True, slots=True)
-class Request:
-    host: str
-    target: str
-
-
-def parse_request(head: bytes) -> Request:
-    if not head.isascii():
-        raise BadRequest("non-ascii request head")
-    text = head.decode()
-    request_line, *header_lines = text.removesuffix("\r\n\r\n").split("\r\n")
-    parts = request_line.split(" ")
-    if len(parts) != 3 or not TOKEN.fullmatch(parts[0]) or not VERSION.fullmatch(parts[2]):
-        raise BadRequest("malformed request line")
-    if not parts[1].startswith("/"):
-        raise BadRequest("only origin-form request targets are accepted")
-    hosts = []
-    for line in header_lines:
-        name, sep, value = line.partition(":")
-        if not sep or not TOKEN.fullmatch(name):
-            raise BadRequest("malformed header line")
-        if name.lower() == "host":
-            hosts.append(value.strip(WHITESPACE))
-    if len(hosts) != 1:
-        raise BadRequest("exactly one Host header is required")
-    host, _, port = hosts[0].partition(":")
-    if port and not port.isdigit():
-        raise BadRequest("malformed Host port")
-    return Request(host.lower(), parts[1])
-
-
-def response(
-    status: HTTPStatus, headers: dict[str, str] | None = None, body: bytes | None = None, content_type: str = TEXT
-) -> bytes:
-    body = f"{status.value} {status.phrase}\n".encode() if body is None else body
-    lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
-    lines += [f"{key}: {value}" for key, value in (headers or {}).items()]
-    lines += [f"Content-Length: {len(body)}", f"Content-Type: {content_type}", "Connection: close"]
-    return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
 
 class Edge:
@@ -151,6 +98,10 @@ class Edge:
             self._handlers.discard(handler)
             writer.close()
 
+    async def _body(self, reader: asyncio.StreamReader, size: int) -> bytes:
+        async with asyncio.timeout(self._header_timeout):
+            return await reader.readexactly(size)
+
     async def _serve(self, peer: Peer, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes | None:
         try:
             async with asyncio.timeout(self._header_timeout):
@@ -175,14 +126,26 @@ class Edge:
         # Any host but a tunnel's, so a tunnel's own app keeps every path.
         if labels is None and request.target == protocol.INFO_PATH:
             return response(HTTPStatus.OK, body=self._ctx.info, content_type=JSON)
+        own = labels is None and request.host == self._ctx.domain
+        homes = own and request.path().startswith(protocol.LOCK_PATH)
+        tunnel: Destination | None
         if labels is not None:
-            tunnel = self._ctx.registry.resolve(labels)
+            tunnel = held = self._ctx.registry.resolve(labels)
+            lock = None if held is None else held.lock
         else:
-            tunnel = self._ctx.root if request.host == self._ctx.domain else None
-        if tunnel is None:
+            tunnel, lock = self._ctx.root if own else None, None
+        if tunnel is None and not homes:
             return response(HTTPStatus.NOT_FOUND)
         if self._mode is Mode.REDIRECT:
             return response(HTTPStatus.PERMANENT_REDIRECT, {"Location": f"https://{request.host}{request.target}"})
+        body = lambda size: self._body(reader, size)  # noqa: E731
+        if homes:
+            return await gate.home(self._ctx, request, body)
+        if lock is not None:
+            outcome = await gate.guard(self._ctx, lock, request, body)
+            if isinstance(outcome, bytes):
+                return outcome
+            head = outcome.head
 
         try:
             upstream = await tunnel.open_stream(peer)

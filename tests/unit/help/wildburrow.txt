@@ -14,6 +14,8 @@ Commands:
   names          List the names bound on the server right now, and which are yours.
   tunnels        List who is connected to the server, as far as you may see.
   kick           End sessions on the server: by id from `wildburrow tunnels`, by a name held,...
+  link           Make one more one-time link to a locked tunnel of yours, landing on URL.
+  links          List who may get into your locked tunnels, and who has.
   serve          Run the server.
   service        Run the server as a system service: systemd on Linux, launchd on macOS.
   hash-password  Print an argon2 hash for the password auth plugin.

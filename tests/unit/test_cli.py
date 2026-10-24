@@ -423,7 +423,7 @@ def test_websocket_transport_runs_the_websocket_client(monkeypatch: pytest.Monke
     cli.main(["login", "s", "--transport", "websocket", "--auth", "token", "--token", "saved"])
     assert cli.main(["3000", "a", "b", "--url", "http://override"]) == 7
     expected = ClientConfig("s", transport="websocket", auth="token", token="from-env", url="http://override")
-    assert calls == [(expected, 3000, ["a", "b"], "localhost", ask.password)]
+    assert calls == [(expected, 3000, ["a", "b"], "localhost", ask.password, None)]
 
 
 def test_token_command_mints_a_hashed_token(capsys: pytest.CaptureFixture[str]) -> None:
@@ -724,7 +724,8 @@ def test_logout_without_a_login(capsys: pytest.CaptureFixture[str]) -> None:
 
 HELP = Path(__file__).parent / "help"
 PAGES = [
-    [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["serve"], ["hash-password"],
+    [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["link"], ["links"], ["serve"],
+    ["hash-password"],
     ["token"], ["tokens"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip

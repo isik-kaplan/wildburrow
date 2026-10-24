@@ -12,6 +12,7 @@ from wildburrow import protocol
 from wildburrow.config import SHOWN
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
+from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
 from wildburrow.core.registry import Registry
 from wildburrow.core.sessions import Session
@@ -47,6 +48,8 @@ class SSHTunnel:
     def __init__(self, conn: asyncssh.SSHServerConnection, session: Session, host: str, port: int) -> None:
         self.identity = session.identity
         self.session: Session | None = session
+        # Only the websocket client can ask for a lock.
+        self.lock: Lock | None = None
         self._conn = conn
         self._host = host
         self._port = port

@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from wildburrow.cli import ask, client, service, tokens
+from wildburrow.cli import ask, client, locking, service, tokens
 from wildburrow.core.names import ANY
 from wildburrow.service import ServiceError
 from wildburrow.service import manager as find_manager
@@ -13,7 +13,14 @@ DURATIONS = "30m, 12h, 7d, 2w or never"
 def _tunnel() -> int:
     port = int(ask.text("Local port", "", ask.port))
     names = ask.text("Names, separated by spaces (* for any one label, as in *.myapp)", "", ask.required)
-    return client._connect(port, tuple(names.split()), None, "localhost", {})
+    options: dict[str, tuple[str, ...]] = {}
+    if ask.confirm("Lock it, so only people you let in see it?", default=False):
+        users = ask.text("Usernames to give a password, separated by spaces (empty for none)")
+        links = ask.text("One-time links: how many, or labels separated by commas (empty for none)")
+        link = (links,) if links.strip() else ()
+        # Asking for a lock and naming no one makes up a username and password.
+        options = {"lock": tuple(users.split()) or (() if link else (locking.BARE,)), "link": link}
+    return client._connect(port, tuple(names.split()), None, "localhost", options)
 
 
 def _login() -> int:

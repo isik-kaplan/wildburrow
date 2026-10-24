@@ -12,6 +12,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 
 from wildburrow import protocol
 from wildburrow.client.config import ClientConfig
+from wildburrow.client.locking import LockRequest
 from wildburrow.client.retry import Backoff
 from wildburrow.streams import relay
 
@@ -77,6 +78,11 @@ async def login(control: ClientConnection, config: ClientConfig, greeting: dict[
     return first
 
 
+def needs(config: ClientConfig, welcome: dict[str, Any], feature: str) -> None:
+    if feature not in welcome.get("features", ()):
+        raise ClientError(f"{config.server} runs an older wildburrow; this needs {protocol.SINCE[feature]} or later")
+
+
 async def ask_server(
     config: ClientConfig,
     request: str,
@@ -91,8 +97,8 @@ async def ask_server(
     try:
         async with (connector or connect)(f"{websocket_base(config)}{protocol.CONNECT_PATH}") as control:
             welcome = await login(control, config, greeting)
-            if feature is not None and feature not in welcome.get("features", ()):
-                raise ClientError(f"{config.server} runs an older wildburrow; this needs 0.3.0 or later")
+            if feature is not None:
+                needs(config, welcome, feature)
             await control.send(protocol.encode(request, **fields))
             async for raw in control:
                 if (message := protocol.decode(raw))["type"] == answer:
@@ -131,6 +137,30 @@ async def kick(
     return await ask_server(config, "kick", "kicked", ask, connector, protocol.SESSIONS, **target)
 
 
+async def logins(
+    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> list[dict[str, Any]]:
+    """Who may get into each of this identity's locked tunnels, and who has."""
+    return list((await ask_server(config, "logins", "logins", ask, connector, protocol.LOCK))["tunnels"])
+
+
+async def link(
+    config: ClientConfig,
+    request: dict[str, Any],
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """One more link to a locked tunnel of this identity's: its label and URL, or the server's reason for none."""
+    return await ask_server(config, "link", "linked", ask, connector, protocol.LOCK, **request)
+
+
+async def end_login(
+    config: ClientConfig, who: str, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> dict[str, Any]:
+    """Ends `who`'s password or link in every locked tunnel of this identity's: the names of each it ended in."""
+    return await ask_server(config, "end-login", "ended-login", ask, connector, protocol.LOCK, who=who)
+
+
 class Client:
     def __init__(
         self,
@@ -142,8 +172,10 @@ class Client:
         out: Callable[[str], None] = print,
         connector: Callable[..., Any] = connect,
         backoff: Backoff | None = None,
+        lock: LockRequest | None = None,
     ) -> None:
         self._config = config
+        self._lock = lock
         self._port = port
         self._names = list(names)
         self._local_host = local_host
@@ -190,10 +222,14 @@ class Client:
                 task.cancel()
 
     async def _session(self, control: ClientConnection, greeting: dict[str, str]) -> int | None:
-        self._out(f"connected as {(await login(control, self._config, greeting))['identity']}")
+        welcome = await login(control, self._config, greeting)
+        if self._lock is not None:
+            needs(self._config, welcome, protocol.LOCK)
+        self._out(f"connected as {welcome['identity']}")
         self._connected = True
         self._backoff.reset()
-        await control.send(protocol.encode("bind", names=self._names))
+        locked = {} if self._lock is None else {"lock": self._lock.spec()}
+        await control.send(protocol.encode("bind", names=self._names, **locked))
         async for raw in control:
             message = protocol.decode(raw)
             match message["type"]:
@@ -204,6 +240,13 @@ class Client:
                 case "rejected":
                     self._out(f"rejected: {message['reason']}")
                     return 1
+                # Only a client that asked for a lock is told about one.
+                case "locked":
+                    assert self._lock is not None  # noqa: S101
+                    self._lock.locked(message, self._out)
+                case "lock-state":
+                    assert self._lock is not None  # noqa: S101
+                    self._lock.state = message["state"]
                 case "open":
                     task = asyncio.create_task(self._stream(control, str(message["id"])))
                     self._streams.add(task)
@@ -228,9 +271,14 @@ class Client:
 
 
 def run(
-    config: ClientConfig, port: int, names: Sequence[str], local_host: str, ask: Callable[[str], str] = getpass.getpass
+    config: ClientConfig,
+    port: int,
+    names: Sequence[str],
+    local_host: str,
+    ask: Callable[[str], str] = getpass.getpass,
+    lock: LockRequest | None = None,
 ) -> int:
-    client = Client(config, port, names, local_host, ask, out=lambda line: print(line, file=sys.stderr))
+    client = Client(config, port, names, local_host, ask, out=lambda line: print(line, file=sys.stderr), lock=lock)
     try:
         return asyncio.run(client.run())
     except KeyboardInterrupt:

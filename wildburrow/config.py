@@ -34,7 +34,8 @@ def _convert(var: str, raw: str, kind: Any) -> Any:
     return kind(raw)
 
 
-def _read(var: str, env: Mapping[str, str]) -> str | None:
+def read(var: str, env: Mapping[str, str]) -> str | None:
+    """`var` from `env`, or from the file `var`_FILE names."""
     path = env.get(var + FILE_SUFFIX)
     if path is None:
         return env.get(var)
@@ -46,16 +47,24 @@ def _read(var: str, env: Mapping[str, str]) -> str | None:
         raise ConfigError(f"{var}{FILE_SUFFIX}: {exc}") from None
 
 
-def load[T](cls: type[T], env: Mapping[str, str], prefix: str) -> T:
+def given(cls: type, env: Mapping[str, str], prefix: str) -> dict[str, Any]:
+    """The fields of `cls` that `env` sets, converted to their types."""
     hints = get_type_hints(cls)
     values: dict[str, Any] = {}
-    missing = []
-    for field in dataclasses.fields(cls):  # type: ignore[arg-type]
+    for field in dataclasses.fields(cls):
         var = f"{prefix}{field.name.upper()}"
-        if (raw := _read(var, env)) is not None:
+        if (raw := read(var, env)) is not None:
             values[field.name] = _convert(var, raw, hints[field.name])
-        elif field.default is dataclasses.MISSING:
-            missing.append(var)
+    return values
+
+
+def load[T](cls: type[T], env: Mapping[str, str], prefix: str) -> T:
+    values = given(cls, env, prefix)
+    missing = [
+        f"{prefix}{field.name.upper()}"
+        for field in dataclasses.fields(cls)  # type: ignore[arg-type]
+        if field.default is dataclasses.MISSING and field.name not in values
+    ]
     if missing:
         raise ConfigError(f"missing required setting(s): {', '.join(missing)}")
     return cls(**values)

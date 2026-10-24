@@ -46,7 +46,7 @@ SHARDS = {
     "transports": ("wildburrow.transports.",),
     "edge": (
         "wildburrow.edge.", "wildburrow.server.", "wildburrow.core.", "wildburrow.protocol.", "wildburrow.streams.",
-        "wildburrow.plugins.", "wildburrow.config.",
+        "wildburrow.plugins.", "wildburrow.config.", "wildburrow.locks.", "wildburrow.durations.",
     ),
     "certs": ("wildburrow.certs.", "wildburrow.dns."),
     "auth": ("wildburrow.auth.", "wildburrow.tokens."),

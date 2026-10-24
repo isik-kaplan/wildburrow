@@ -176,6 +176,7 @@ async def test_any_host_but_a_tunnels_gets_the_document(ctx: ServerContext, host
 
 class Bound(Root):
     identity = Identity("someone", "key", "someone")
+    lock = None
 
 
 async def test_a_tunnel_keeps_the_path_for_its_own_app(ctx: ServerContext) -> None:

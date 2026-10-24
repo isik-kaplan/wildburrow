@@ -9,7 +9,8 @@ from typing import Any
 
 import click
 
-from wildburrow.cli import ask
+from wildburrow import durations
+from wildburrow.cli import ask, locking
 from wildburrow.cli.errors import Failure
 from wildburrow.cli.output import table, when
 from wildburrow.cli.tokens import DENY
@@ -82,6 +83,7 @@ def _given(options: dict[str, Any]) -> dict[str, Any]:
         click.Option(["--server"], help="server to use instead of the saved one"),
         click.Option(["--local-host"], default="localhost", show_default=True, help="where the local port listens"),
         *CLIENT_OPTIONS,
+        *locking.OPTIONS,
     ]
 )
 @click.argument("port", type=click.IntRange(1, 65535))
@@ -92,9 +94,13 @@ def connect(port: int, names: tuple[str, ...], server: str | None, local_host: s
 
 
 def _connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, options: dict[str, Any]) -> int:
-    config = dataclasses.replace(server_config(server), **_given(options))
+    lock = locking.request({key: value for key, value in options.items() if key in locking.NAMES})
+    given = _given({key: value for key, value in options.items() if key not in locking.NAMES})
+    config = dataclasses.replace(server_config(server), **given)
     if config.transport == "websocket":
-        return websocket.run(config, port, list(names), local_host, ask.password)
+        return websocket.run(config, port, list(names), local_host, ask.password, lock)
+    if lock is not None:
+        raise Failure("--lock and --link need --transport websocket", 2)
     return ssh.run(config, port, list(names), local_host, batch=ask.off())
 
 
@@ -343,4 +349,70 @@ def _logout(yes: bool) -> int:
         return 1
     path.unlink()
     click.echo(f"removed {path}")
+    return 0
+
+
+@click.command("link")
+@click.argument("url")
+@click.option("--as", "label", help="label it, as your app is told who logged in (default: the next link-N)")
+@click.option("--expires", metavar="DURATION", help="stop it working after this long (default: with the tunnel)")
+@click.option("--server", help="server to ask instead of the saved one")
+def link(url: str, label: str | None, expires: str | None, server: str | None) -> int:
+    """Make one more one-time link to a locked tunnel of yours, landing on URL."""
+    return _link(url, label, expires, server)
+
+
+def _link(url: str, label: str | None, expires: str | None, server: str | None) -> int:
+    request: dict[str, Any] = {"url": url, "label": label}
+    if expires is not None:
+        if (length := durations.seconds(expires)) is None:
+            raise Failure(f"--expires: expected a duration {durations.EXAMPLES}, got {expires!r}", 2)
+        request["expires"] = int(time.time()) + length
+    answer = _asked(websocket.link, server, request)
+    if "error" in answer:
+        raise Failure(str(answer["error"]))
+    click.echo(f"{answer['label']}  {answer['url']}")
+    return 0
+
+
+@click.command()
+@click.option("--end", "who", metavar="WHO", help="end this password or link, logging out whoever used it")
+@click.option("--server", help="server to ask instead of the saved one")
+def links(who: str | None, server: str | None) -> int:
+    """List who may get into your locked tunnels, and who has. Logs in as a tunnel would."""
+    return _links(who, server)
+
+
+def _status(entry: dict[str, Any]) -> str:
+    if entry["ended"]:
+        return "ended"
+    if entry["kind"] == "password":
+        return f"{entry['logins']} login{'' if entry['logins'] == 1 else 's'}" if entry["logins"] else "-"
+    if entry["used"] is not None:
+        return f"used {when(entry['used'])}"
+    if entry["expires"] is not None and entry["expires"] <= time.time():
+        return "expired"
+    return "unused" if entry["expires"] is None else f"unused, until {when(entry['expires'])}"
+
+
+def _links(who: str | None, server: str | None) -> int:
+    if who is not None:
+        answer = _asked(websocket.end_login, server, who)
+        for names in answer["ended"]:
+            click.echo(f"ended {who} on {_listed(names)}")
+        if not answer["ended"]:
+            raise Failure(f"no password or link named {who} in your locked tunnels")
+        return 0
+    found = _asked(websocket.logins, server)
+    if not found:
+        click.echo("no locked tunnels of yours")
+    for index, tunnel in enumerate(found):
+        if index:
+            click.echo()
+        click.echo(_listed(tunnel["names"]))
+        rows = [
+            (entry["who"], entry["kind"], _status(entry), "-" if entry["seen"] is None else when(entry["seen"]))
+            for entry in tunnel["logins"]
+        ]
+        table([("WHO", "KIND", "USED", "LAST SEEN"), *rows])
     return 0

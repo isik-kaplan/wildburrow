@@ -49,8 +49,9 @@ def _alone(ctx: click.Context) -> int:
     return menu.run()
 
 
-for command in (client.connect, client.login, client.logout, client.names, client.tunnels, client.kick,
-                server.serve, service.service, server.hash_password, tokens.token, tokens.list_tokens):  # fmt: skip
+for command in (client.connect, client.login, client.logout, client.names, client.tunnels, client.kick, client.link,
+                client.links, server.serve, service.service, server.hash_password, tokens.token,
+                tokens.list_tokens):  # fmt: skip
     cli.add_command(command)
 
 

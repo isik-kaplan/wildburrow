@@ -32,6 +32,22 @@ Every setting is an option of `serve`, `service install` and `service edit`, and
 | `WILDBURROW_MAX_HEADER_BYTES` | `65536` | Largest accepted request head |
 | `WILDBURROW_HEADER_TIMEOUT` | `30` | Seconds for the TLS handshake and request head |
 
+## Locks
+
+Defaults for every [locked tunnel](locks.md), which a client can change for its own.
+
+| Variable | Default | |
+|---|---|---|
+| `WILDBURROW_LOCK_PATH` | `/_wildburrow/login` | Login path on a locked tunnel's hosts |
+| `WILDBURROW_LOCK_COOKIE` | `wildburrow` | Login cookie's name |
+| `WILDBURROW_LOCK_HEADER` | `X-Wildburrow-Auth` | Header scripts log in with, as `USER:PASSWORD` |
+| `WILDBURROW_LOCK_USER_HEADER` | `X-Wildburrow-User` | Header telling the app who logged in |
+| `WILDBURROW_LOCK_EXPIRES` | when the browser closes | How long a login lasts, like `12h` |
+| `WILDBURROW_LOCK_CONFIRM_LINKS` | `true` | A one-time link waits for a click |
+| `WILDBURROW_LOCK_PAGE` / `_LINK_PAGE` / `_MESSAGE_PAGE` | built in | Your own pages, usually with `_FILE` |
+| `WILDBURROW_LOCK_ATTEMPTS` | `10` | Failed logins a minute on one tunnel before it waits; server only |
+| `WILDBURROW_LOCK_CODE_EXPIRES` | `10m` | How long a hand-off code is kept unused; server only |
+
 ## Certificates
 
 | Variable | Default | |
