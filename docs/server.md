@@ -72,6 +72,8 @@ docker run -d --restart unless-stopped -p 80:80 -p 443:443 -p 2222:2222 -v wildb
 - It runs as an unprivileged user and keeps its data in `/data`; a host file it reads must be readable by that user.
 - [examples/docker-compose.traefik.yml](../examples/docker-compose.traefik.yml) runs it behind Traefik with TLS
   passthrough and PROXY protocol, for hosts where another proxy already owns ports 80 and 443.
+- [examples/docker-compose.coolify.yml](../examples/docker-compose.coolify.yml) does the same as a Coolify Docker
+  Compose application, behind Coolify's own Traefik.
 
 ## What clients are told
 
