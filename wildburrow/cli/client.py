@@ -32,6 +32,7 @@ AUTH_METHODS = {
 }
 # Tokens only travel over websocket; ssh logs in with what ssh itself offers.
 AUTH_BY_TRANSPORT = {"ssh": ("key", "password"), "websocket": tuple(AUTH_METHODS)}
+BY_TOKEN = {"transport": "websocket", "auth": "token"}
 
 
 class _Seconds(click.ParamType):
@@ -119,7 +120,8 @@ def server_config(server: str | None) -> ClientConfig:
     else:
         config = dataclasses.replace(saved, server=server or saved.server)
     if token := os.environ.get(TOKEN_ENV):
-        config = dataclasses.replace(config, token=token)
+        # A token in the environment is how to log in this time, whatever the saved login says.
+        config = dataclasses.replace(config, token=token, **BY_TOKEN)
     return config
 
 
@@ -152,11 +154,15 @@ def _listed(names: Iterable[str]) -> str:
 def _resolve(config: ClientConfig, given: dict[str, Any]) -> ClientConfig:
     """`config` with what the server publishes filling in whatever wasn't given."""
     if "transport" in given and "auth" in given:
+        transport, auth = given["transport"], given["auth"]
+        if auth not in AUTH_BY_TRANSPORT[transport]:
+            offered = _listed(AUTH_BY_TRANSPORT[transport])
+            raise Failure(f"{auth} logins don't go over {transport}, which takes: {offered}", 2)
         return config
     published = _published(config)
     if published is None:
         return config
-    transport = given.get("transport", published.transport)
+    transport = given.get("transport") or _carrying(published, given.get("auth"))
     if transport not in published.auth:
         raise Failure(f"{config.server} doesn't take --transport {transport}; it offers: {_listed(published.auth)}", 2)
     auth = given.get("auth", published.method_for(transport))
@@ -165,6 +171,12 @@ def _resolve(config: ClientConfig, given: dict[str, Any]) -> ClientConfig:
         raise Failure(f"{config.server} doesn't take --auth {auth} over {transport}; it takes: {offered}", 2)
     port = given.get("ssh_port", published.ssh_port or config.ssh_port)
     return dataclasses.replace(config, transport=transport, auth=auth, ssh_port=port)
+
+
+def _carrying(published: discovery.Published, auth: str | None) -> str:
+    """The transport the server suggests, unless only another one takes the method given."""
+    transports = [published.transport, *published.auth]
+    return next((name for name in transports if auth in published.auth[name]), published.transport)
 
 
 def _pick(question: str, choices: dict[str, str], default: str) -> str:
@@ -205,7 +217,7 @@ def _ask_login(saved: ClientConfig) -> ClientConfig:
     return config
 
 
-@click.command(params=[click.Option(["--token"], help="token for the token auth method"), *CLIENT_OPTIONS])
+@click.command(params=[click.Option(["--token"], help="token to log in with; means --auth token"), *CLIENT_OPTIONS])
 @click.argument("server", required=False)
 def login(server: str | None, token: str | None, **options: Any) -> int:
     """Save the server and how to connect to it. Asks for each, given no SERVER in a terminal."""
@@ -221,7 +233,11 @@ def _login(server: str | None, token: str | None, options: dict[str, Any]) -> in
     elif server is None:
         raise click.UsageError("Missing argument 'SERVER'.")
     else:
-        config = _resolve(ClientConfig(server, **_given({"token": token, **options})), _given(options))
+        given = _given(options)
+        if token is not None:
+            # A token says how to log in, so the method the server suggests doesn't replace it.
+            given = {"auth": BY_TOKEN["auth"], **given}
+        config = _resolve(ClientConfig(server, **_given({"token": token}), **given), given)
         if config.auth == "token" and not config.token:
             click.echo(f"no token saved: pass --token, or set {TOKEN_ENV} when connecting", err=True)
     write_config(path, config)

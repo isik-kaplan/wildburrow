@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-24
+
+### Fixed
+
+- **A token logs in by token.** `wildburrow login SERVER --token TOKEN` saved the server's suggested method instead,
+  so on a server suggesting `key` the token was never sent and the login failed. A given token now means
+  `--auth token`, over a transport that takes it; `--auth` still wins when given.
+- **`WILDBURROW_TOKEN` logs in by token** for that run, over websocket, whatever the saved login says. Options given
+  still win.
+- **The login line `wildburrow token` prints** spells out `--auth token`, so it works on clients before 0.4.1 too.
+
+### Changed
+
+- A token over ssh is refused, whether from `--token` or `--auth token`, rather than saved for a login ssh can't make.
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

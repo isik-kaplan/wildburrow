@@ -114,7 +114,8 @@ def _token(
     click.echo(f"id: {grant.id} (for {DENY}, should it need stopping early)")
     click.echo(f"\non {name}'s device:")
     click.echo("  uv tool install wildburrow")
-    click.echo(f"  wildburrow login {target or SERVER_PLACEHOLDER} --token {value}")
+    # --auth spelled out for clients before 0.4.1, which take the server's suggested method over a given token.
+    click.echo(f"  wildburrow login {target or SERVER_PLACEHOLDER} --auth token --token {value}")
     if not target:
         click.echo(f"\nno saved login to name the server: replace {SERVER_PLACEHOLDER}, or pass --server", err=True)
     return 0

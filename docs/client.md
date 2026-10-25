@@ -17,6 +17,8 @@ all a client needs.
 
 - Options you pass win: `--transport`, `--auth`, `--ssh-port`, `--identity`, `--token`, `--user`, `--url`. One the
   server doesn't offer is refused, naming what it does offer.
+- `--token` means `--auth token`, over websocket where the server suggests ssh, since tokens only travel over
+  websocket. `--auth` given as well wins.
 - Given no server in a terminal, `login` asks for each setting, offering only what the server runs and starting from
   its suggestions. A choice it doesn't need to ask, because the server offers only one, is skipped and said.
 - A server older than 0.2.0 publishes nothing, so `login` falls back to `ssh` and `key` and says so.
@@ -35,7 +37,7 @@ wildburrow logout                                       # forget the saved serve
 ```sh
 wildburrow 3000 myapp '*.myapp'               # both names, to local port 3000
 wildburrow 3000 myapp --server other.example.com
-WILDBURROW_TOKEN=wb1... wildburrow 3000 app    # the token from the environment instead
+WILDBURROW_TOKEN=wb1... wildburrow 3000 app    # logs in with this token over websocket, whatever is saved
 ```
 
 `wildburrow PORT NAME...` is short for `wildburrow connect PORT NAME...`. Every `login` option works here too, for

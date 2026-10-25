@@ -4,6 +4,7 @@ import functools
 import json
 import logging
 import os
+import shlex
 import ssl
 import sys
 import time
@@ -607,7 +608,7 @@ async def test_an_unreachable_local_port_is_reported(
 
 @pytest.mark.parametrize(
     ("server_auth", "login", "expected"),
-    [("key", [], "key"), ("token,key", ["--token", TOKEN], "token")],
+    [("key", [], "key"), ("token,key", ["--token", TOKEN], "token"), ("key,token", ["--token", TOKEN], "token")],
 )
 async def test_login_needs_nothing_but_the_server(
     start_server: StartServer,
@@ -633,6 +634,35 @@ async def test_login_needs_nothing_but_the_server(
     task, out = start_client(running, saved.__replace__(url=f"http://{DOMAIN}"), backend.port, ["app"])
     assert await out.wait_for("ready:") == f"ready: http://app.{DOMAIN}"
     assert await get(running.http_port, f"app.{DOMAIN}", "/w") == (200, b"GET /w HTTP/1.1")
+    await stop(task)
+
+
+async def test_the_login_line_a_minted_token_prints_logs_in(
+    start_server: StartServer,
+    credentials: Credentials,
+    backend: Backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Key first, so the server suggests logging in by key to anyone who doesn't say otherwise.
+    running = await start_server(
+        WILDBURROW_TRANSPORTS="websocket",
+        WILDBURROW_AUTH="key,token",
+        WILDBURROW_AUTH_TOKEN_SIGNERS=credentials.public_key,
+    )
+    minting = ["token", "alice", "--names", "alice", "-y", "--server", DOMAIN, "--identity", str(credentials.key)]
+    assert await asyncio.to_thread(cli.main, minting) == 0
+    [line] = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  wildburrow login ")]
+    login = [*shlex.split(line)[1:], "--url", f"http://127.0.0.1:{running.http_port}"]
+    assert await asyncio.to_thread(cli.main, login) == 0
+    saved = read_config(config_path())
+    assert (saved.transport, saved.auth) == ("websocket", "token")
+    task, out = start_client(running, saved.__replace__(url=f"http://{DOMAIN}"), backend.port, ["alice"])
+    assert await out.wait_for("connected as") == "connected as alice"
+    assert await out.wait_for("ready:") == f"ready: http://alice.{DOMAIN}"
     await stop(task)
 
 

@@ -44,7 +44,7 @@ id: 3f9a0c4e1b2d7a65 (for WILDBURROW_AUTH_TOKEN_DENY, should it need stopping ea
 
 on alice's device:
   uv tool install wildburrow
-  wildburrow login tunnel.example.com --token wb1...
+  wildburrow login tunnel.example.com --auth token --token wb1...
 ```
 
 All of a holder's tokens are one identity, so a newer token for `alice` takes over the names an older one holds.

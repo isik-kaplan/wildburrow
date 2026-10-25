@@ -11,6 +11,7 @@ from tests.unit.conftest import ENTER, Typist
 from wildburrow import cli, tokens
 from wildburrow.auth.token import TokenAuth, TokenSettings
 from wildburrow.cli import ask as cli_ask
+from wildburrow.cli import client as client_cli
 from wildburrow.cli import tokens as tokens_cli
 from wildburrow.cli.output import when
 from wildburrow.client import websocket
@@ -58,7 +59,7 @@ async def test_mints_a_token_the_server_accepts(
         f"id: {grant.id} (for {PREFIX}AUTH_TOKEN_DENY, should it need stopping early)\n"
         "\non alice's device:\n"
         "  uv tool install wildburrow\n"
-        f"  wildburrow login {SERVER} --token {minted(out)}\n"
+        f"  wildburrow login {SERVER} --auth token --token {minted(out)}\n"
     )
     assert await checks(credentials, minted(out))
 
@@ -143,7 +144,7 @@ def test_server_and_key_can_be_given(
 ) -> None:
     args = ["token", "a", "--names", "any", "-y", "--server", "other.example.com", "--identity", str(credentials.key)]
     assert cli.main(args) == 0
-    assert "  wildburrow login other.example.com --token " in capsys.readouterr().out
+    assert "  wildburrow login other.example.com --auth token --token " in capsys.readouterr().out
 
 
 def test_without_a_server_it_says_where_the_name_goes(
@@ -151,7 +152,7 @@ def test_without_a_server_it_says_where_the_name_goes(
 ) -> None:
     assert cli.main(["token", "a", "--names", "any", "-y", "--identity", str(credentials.key)]) == 0
     out, err = capsys.readouterr()
-    assert "  wildburrow login SERVER --token " in out
+    assert "  wildburrow login SERVER --auth token --token " in out
     assert err == "\nno saved login to name the server: replace SERVER, or pass --server\n"
     assert json.loads(tokens_cli.log_path().read_text())["server"] == ""
 
@@ -250,7 +251,7 @@ def test_names_lists_what_the_server_has_bound(
         "mine    you",
         "pic     someone else",
     ]
-    assert asked == [logged_in.__replace__(token="from-env")]
+    assert asked == [logged_in.__replace__(token="from-env", **client_cli.BY_TOKEN)]
     assert cli.main(["names", "--server", "other.example.com"]) == 0
     assert asked[-1].server == "other.example.com"
 

@@ -392,6 +392,20 @@ def test_login_saves_every_option() -> None:
     )
 
 
+def test_a_token_in_the_environment_logs_in_by_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    started: list[ClientConfig] = []
+    monkeypatch.setattr(client_cli.websocket, "run", lambda config, *args: started.append(config) or 0)
+    monkeypatch.setattr(client_cli.ssh, "run", lambda config, *args, **kwargs: started.append(config) or 0)
+    cli.main(["login", "s", "--transport", "ssh", "--auth", "key"])
+    monkeypatch.setenv(client_cli.TOKEN_ENV, "from-env")
+    assert cli.main(["3000", "a"]) == 0
+    assert cli.main(["3000", "a", "--transport", "ssh", "--auth", "key"]) == 0
+    assert started == [
+        ClientConfig("s", transport="websocket", auth="token", token="from-env"),
+        ClientConfig("s", transport="ssh", auth="key", token="from-env"),
+    ]
+
+
 def test_reconnect_flags_override_saved_config(monkeypatch: pytest.MonkeyPatch) -> None:
     configs: list[ClientConfig] = []
     monkeypatch.setattr(client_cli.ssh, "run", lambda config, *args, **kwargs: configs.append(config) or 0)
@@ -550,8 +564,47 @@ def test_login_asks_at_the_url_it_was_given(login_server: LoginServer) -> None:
 )
 def test_login_fills_in_what_was_not_given(login_server: LoginServer, args: list[str], expected: dict) -> None:
     login_server.published = BOTH
+    assert cli.main(["login", "s", *args]) == 0
+    assert read_config(config_path()) == ClientConfig("s", **expected)
+
+
+KEY_FIRST = discovery.Published({"ssh": ("key",), "websocket": ("key", "token")}, "ssh", "key", 2200)
+
+
+@pytest.mark.parametrize(
+    ("published", "args", "expected"),
+    [
+        (WEBSOCKET_ONLY, [], {"transport": "websocket", "auth": "token"}),
+        (KEY_FIRST, [], {"transport": "websocket", "auth": "token", "ssh_port": 2200}),
+        (BOTH, ["--auth", "key"], {"transport": "websocket", "auth": "key", "ssh_port": 2200}),
+        (KEY_FIRST, ["--auth", "key"], {"transport": "ssh", "auth": "key", "ssh_port": 2200}),
+    ],
+)
+def test_a_token_logs_in_by_token_whatever_the_server_suggests(
+    login_server: LoginServer, published: discovery.Published, args: list[str], expected: dict
+) -> None:
+    login_server.published = published
     assert cli.main(["login", "s", "--token", "t", *args]) == 0
     assert read_config(config_path()) == ClientConfig("s", token="t", **expected)
+
+
+def test_a_token_the_server_takes_nowhere_is_refused(
+    login_server: LoginServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    login_server.published = discovery.Published({"websocket": ("key",)}, "websocket", "key", None)
+    assert cli.main(["login", "s", "--token", "t"]) == 2
+    assert capsys.readouterr().err == "s doesn't take --auth token over websocket; it takes: key\n"
+    assert read_config(config_path()) is None
+
+
+@pytest.mark.parametrize("args", [["--token", "t"], ["--auth", "token"], ["--auth", "token", "--token", "t"]])
+def test_a_token_over_ssh_is_refused(
+    login_server: LoginServer, capsys: pytest.CaptureFixture[str], args: list[str]
+) -> None:
+    assert cli.main(["login", "s", "--transport", "ssh", *args]) == 2
+    assert capsys.readouterr().err == "token logins don't go over ssh, which takes: key, password\n"
+    assert login_server.asked == []
+    assert read_config(config_path()) is None
 
 
 def test_login_given_both_asks_the_server_nothing(login_server: LoginServer) -> None:

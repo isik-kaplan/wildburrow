@@ -3,7 +3,7 @@ Usage: wildburrow login [OPTIONS] [SERVER]
   Save the server and how to connect to it. Asks for each, given no SERVER in a terminal.
 
 Options:
-  --token TEXT                  token for the token auth method
+  --token TEXT                  token to log in with; means --auth token
   --ssh-port INTEGER            (default: 2222)
   --user TEXT                   SSH user (default: your local user)
   --transport [ssh|websocket]   (default: ssh)
