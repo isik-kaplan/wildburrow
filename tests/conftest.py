@@ -276,3 +276,11 @@ def free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+@pytest.fixture(autouse=True)
+def every_record_is_written(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+    """The server logs a write it couldn't make and carries on; a test fails on one, since it means a bug."""
+    yield
+    failed = [record.getMessage() for record in caplog.records if record.name == "wildburrow.store.database"]
+    assert failed == []

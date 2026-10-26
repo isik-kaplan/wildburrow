@@ -1,9 +1,23 @@
-Usage: wildburrow kick [OPTIONS] [SESSION]
+Usage: wildburrow kick [OPTIONS] [TARGET]...
 
-  End sessions on the server: by id from `wildburrow tunnels`, by a name held, or by identity.
+  End sessions on the server, each TARGET a session id from `wildburrow tunnels`, an identity or a
+  name held.
 
 Options:
-  --name TEXT    end whichever session holds this name
-  --who TEXT     end every session of this identity
-  --server TEXT  server to ask instead of the saved one
-  -h, --help     Show this message and exit.
+  --server TEXT                 server to use instead of the saved one
+  --token TEXT                  token to log in with; means --auth token
+  --ssh-port INTEGER            SSH port (1-65535) (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   how to reach the server (default: ssh)
+  --auth [key|password|token]   how to log in (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  --who IDENTITY                end every session of this identity, whatever else the word could
+                                mean; repeatable
+  --name NAME                   end whichever session holds this name, whatever else the word
+                                could mean; repeatable
+  -h, --help                    Show this message and exit.

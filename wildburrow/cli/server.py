@@ -15,6 +15,7 @@ from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
 from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET, SHOWN
 from wildburrow.locks import LOCK_PREFIX, ServerLockSettings
+from wildburrow.store.database import DATABASE_PREFIX, DatabaseSettings
 
 SERVER_EXTRA = "the server needs extra dependencies: install 'wildburrow[server]'"
 GROUPS = "wildburrow.settings"
@@ -44,6 +45,7 @@ def settings_groups() -> list[SettingsGroup]:
         groups = [
             SettingsGroup("Server", ServerSettings, PREFIX),
             SettingsGroup("Locks", ServerLockSettings, LOCK_PREFIX),
+            SettingsGroup("Database", DatabaseSettings, DATABASE_PREFIX),
         ]
         for kind in plugins.KINDS:
             for name, entry_point in sorted(plugins.available(kind).items()):
@@ -187,9 +189,14 @@ def _ask_missing(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-@click.command("hash-password")
+@click.group()
+def passwords() -> None:
+    """Passwords for the server's password auth plugin."""
+
+
+@passwords.command("hash")
 def hash_password() -> int:
-    """Print an argon2 hash for the password auth plugin."""
+    """Print an argon2 hash of a password, for WILDBURROW_AUTH_PASSWORD_HASH."""
     return _hash_password()
 
 

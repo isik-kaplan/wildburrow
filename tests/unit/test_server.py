@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import os
 import signal
@@ -12,14 +13,23 @@ from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
 from tests.conftest import free_port
+from tests.unit.test_registry import FakeTunnel
 from wildburrow import config
+from wildburrow import server as server_module
 from wildburrow.auth.base import Authenticator
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
-from wildburrow.core.types import Peer
+from wildburrow.core.types import Identity, Peer
 from wildburrow.server import Server, serve
 from wildburrow.transports.ssh import SSHSettings, SSHTransport, load_host_key
-from wildburrow.transports.websocket import WebSocketSettings, WebSocketTransport, _Outbox, _Root, close_reason
+from wildburrow.transports.websocket import (
+    WebSocketSettings,
+    WebSocketTransport,
+    _Outbox,
+    _Root,
+    close_reason,
+    recorded,
+)
 
 
 def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
@@ -44,12 +54,40 @@ def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
         ({"AUTH": ""}, "need at least one plugin each"),
         ({"TRANSPORTS": ""}, "need at least one plugin each"),
         ({"PROXY_TRUSTED": "10.0.0.0/8,not-a-network"}, "PROXY_TRUSTED: 'not-a-network'"),
+        ({"INDEX": "maybe"}, "^WILDBURROW_INDEX: expected one of never, opt-in, opt-out, got 'maybe'$"),
     ],
 )
 def test_invalid_server_settings(tmp_path: Path, overrides: dict[str, str], message: str) -> None:
     values = env(tmp_path, **overrides)
     with pytest.raises(config.ConfigError, match=message):
         Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+
+
+@dataclasses.dataclass
+class WithSecrets:
+    name: str = "x"
+    key: str = dataclasses.field(default="", metadata={config.SECRET: True})
+    other: str = dataclasses.field(default="s3cret", metadata={config.SECRET: True})
+
+
+def test_a_run_records_its_settings_with_secrets_only_as_set() -> None:
+    assert server_module.recorded(WithSecrets()) == {"name": "x", "key": "", "other": "(set)"}  # type: ignore[arg-type]
+
+
+async def test_the_server_takes_its_log_handler_away_when_it_stops(tmp_path: Path) -> None:
+    values = env(tmp_path)
+    server = Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+    before = list(logging.getLogger("wildburrow").handlers)
+    async with server:
+        assert len(logging.getLogger("wildburrow").handlers) == len(before) + 1
+    assert logging.getLogger("wildburrow").handlers == before
+
+
+def test_certificates_go_in_the_servers_record(tmp_path: Path) -> None:
+    values = env(tmp_path)
+    server = Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+    server.dns = object()
+    assert server._setup_tls()._record is server.ctx.record
 
 
 def test_domain_is_lowercased(tmp_path: Path) -> None:
@@ -156,7 +194,7 @@ async def test_names_are_measured_with_the_domain(tmp_path: Path) -> None:
     ctx = ServerContext(domain, 5, tmp_path, Authenticator([]))
     name = ".".join(["b" * 60] * 3)
     with pytest.raises(BindRejected, match=rf"^'{name}': longer than 253 characters with the domain$"):
-        await ctx.bind(name, object(), print)
+        await ctx.bind(name, FakeTunnel(Identity("a", "key", "a")), print)
 
 
 class ClosingDNS:
@@ -211,3 +249,16 @@ async def test_a_tls_server_shuts_down_cleanly(tmp_path: Path, caplog: pytest.Lo
         while "getting the *.tunnel.example.com certificate failed; retrying in 300s" not in caplog.messages:
             await asyncio.sleep(0.01)
     assert dns.closed
+
+
+@pytest.mark.parametrize(
+    ("answer", "kept"),
+    [
+        ({"label": "l", "url": "https://foo.example.com/_wildburrow/login/link/KEY"},
+         {"label": "l", "url": "https://foo.example.com/_wildburrow/login/link/"}),
+        ({"url": "https://foo.example.com/x"}, {"url": "https://foo.example.com/x"}),
+        ({"names": []}, {"names": []}),
+    ],
+)  # fmt: skip
+def test_a_link_answer_is_recorded_without_its_key(answer: dict, kept: dict) -> None:
+    assert recorded(answer) == kept

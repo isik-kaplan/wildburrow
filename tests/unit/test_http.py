@@ -54,7 +54,8 @@ def test_bad_requests(raw: bytes, reason: str) -> None:
 def test_responses_are_complete_and_close_the_connection() -> None:
     assert response(HTTPStatus.PERMANENT_REDIRECT, {"Location": "https://a/"}) == (
         b"HTTP/1.1 308 Permanent Redirect\r\nLocation: https://a/\r\nContent-Length: 23\r\n"
-        b"Content-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n308 Permanent Redirect\n"
+        b"Content-Type: text/plain; charset=utf-8\r\nConnection: close\r\nX-Robots-Tag: noindex, nofollow\r\n\r\n"
+        b"308 Permanent Redirect\n"
     )
 
 

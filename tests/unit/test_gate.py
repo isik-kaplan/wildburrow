@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -9,12 +10,12 @@ from tests.unit.test_edge import exchange, running
 from tests.unit.test_locks import NOW, SECRET_TEXT, Changes, Clock, bound, digest
 from tests.unit.test_registry import FakeTunnel
 from wildburrow.core.context import ServerContext
-from wildburrow.core.locks import Lock, Locking, challenge
+from wildburrow.core.locks import Lock, Locking, challenge, entry_id
 from wildburrow.core.types import Identity
 from wildburrow.edge import gate
 from wildburrow.edge.gate import BUILT_IN, FORM_BYTES, FORM_FIELDS, MAX_TRIES, STRICT, Admitted
 from wildburrow.edge.messages import parse_request
-from wildburrow.locks import DEFAULTS, FIELDS, LockSettings
+from wildburrow.locks import DEFAULTS, FIELDS, LINK, PASSWORD, LockSettings
 
 ALICE = Identity("alice", "token", "alice")
 HOME = "foo.example.com"
@@ -76,7 +77,8 @@ def posted(form: dict[str, str]) -> tuple[str, Any]:
 
 def logged_in(lock: Lock, host: str, label: str = "alice", until: int = 0) -> str:
     name = lock.home_cookie_name() if host == lock.home else lock.cookie_name()
-    return f"Cookie: {name}={lock.cookie(host, lock.entries[label], until)}"
+    [entry] = [entry for entry in lock.entries.values() if entry.label == label]
+    return f"Cookie: {name}={lock.cookie(host, entry, until)}"
 
 
 async def test_the_login_page_carries_a_hand_off_through(ctx: ServerContext) -> None:
@@ -127,9 +129,9 @@ async def test_a_login_at_home_lands_where_the_visitor_was_going(ctx: ServerCont
         landed = await ask(ctx, lock, "POST", HOME, "/_wildburrow/login", length, body=body)
         assert (landed.status, landed.header("Location")) == (303, landing)
         [cookie] = landed.cookies()
-        assert cookie.startswith("wildburrow=alice.0.")
+        assert cookie.startswith("wildburrow=password:alice.0.")
         assert cookie.endswith("; Path=/; HttpOnly; SameSite=Lax")
-    assert lock.entries["alice"].logins == 3
+    assert lock.entries[entry_id(PASSWORD, "alice")].logins == 3
 
 
 async def test_a_login_lasts_as_long_as_the_lock_says(ctx: ServerContext) -> None:
@@ -144,10 +146,11 @@ async def test_a_login_cookie_never_counts_down_past_zero() -> None:
     clock = Clock()
     lock = Lock(b"s" * 32, DEFAULTS, HOME, False, True, Locking(), Changes(), clock)
     lock.add_password("alice", "pw")
-    cookie = gate._login_cookie(lock, lock.cookie_name(), HOME, lock.entries["alice"], NOW - 5)
-    assert cookie.startswith("__Host-wildburrow=alice.")
+    cookie = gate._login_cookie(lock, lock.cookie_name(), HOME, lock.entries[entry_id(PASSWORD, "alice")], NOW - 5)
+    assert cookie.startswith("__Host-wildburrow=password:alice.")
     assert cookie.endswith("; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0")
-    assert gate._login_cookie(lock, "n", HOME, lock.entries["alice"], NOW + 7).endswith("; Max-Age=7")
+    alice = lock.entries[entry_id(PASSWORD, "alice")]
+    assert gate._login_cookie(lock, "n", HOME, alice, NOW + 7).endswith("; Max-Age=7")
 
 
 async def test_too_many_failures_stop_logins_for_a_while(ctx: ServerContext) -> None:
@@ -158,7 +161,7 @@ async def test_too_many_failures_stop_logins_for_a_while(ctx: ServerContext) -> 
     length, body = posted({"username": "alice", "password": "pw"})
     page = await ask(ctx, lock, "POST", HOME, "/_wildburrow/login", length, body=body)
     assert (page.status, page.body) == (429, b"Too many tries. Wait a minute, then try again.")
-    assert lock.entries["alice"].logins == 0
+    assert lock.entries[entry_id(PASSWORD, "alice")].logins == 0
 
 
 @pytest.mark.parametrize(
@@ -288,9 +291,9 @@ async def test_a_claimed_code_logs_in_on_its_host(ctx: ServerContext) -> None:
     landed = await ask(ctx, lock, "GET", OTHER, target, f"Cookie: x=1; wildburrow-pending=1.{VERIFIER}")
     assert (landed.status, landed.header("Location")) == (303, "/x")
     [cookie, cleared] = landed.cookies()
-    assert cookie.startswith(f"wildburrow=alice.{NOW * 2}.")
+    assert cookie.startswith(f"wildburrow=password:alice.{NOW * 2}.")
     assert cleared == "wildburrow-pending=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
-    assert lock.entries["alice"].seen is not None
+    assert lock.entries[entry_id(PASSWORD, "alice")].seen is not None
 
 
 async def test_a_claim_without_its_verifier_starts_over(ctx: ServerContext) -> None:
@@ -329,7 +332,7 @@ async def test_paths_that_only_look_like_the_lock_reach_the_app(ctx: ServerConte
 
 async def test_a_logged_in_request_reaches_the_app_without_the_locks_own_headers(ctx: ServerContext) -> None:
     lock = locked(ctx)
-    cookie = lock.cookie(OTHER, lock.entries["alice"], 0)
+    cookie = lock.cookie(OTHER, lock.entries[entry_id(PASSWORD, "alice")], 0)
     headers = (
         f"Cookie: a=1; wildburrow={cookie}; ; wildburrow-pending=1.v; b=2",
         "Cookie: wildburrow-pending=1.v",
@@ -344,7 +347,7 @@ async def test_a_logged_in_request_reaches_the_app_without_the_locks_own_headers
             f"GET /x HTTP/1.1\r\nHost: {OTHER}\r\nCookie: a=1; b=2\r\nAccept: */*\r\nX-Wildburrow-User: alice\r\n\r\n"
         ).encode()
     )
-    assert lock.entries["alice"].seen is not None
+    assert lock.entries[entry_id(PASSWORD, "alice")].seen is not None
 
 
 async def test_a_cookie_for_another_host_lets_no_one_in(ctx: ServerContext) -> None:
@@ -386,7 +389,7 @@ async def test_a_non_get_without_a_login_is_plainly_refused(ctx: ServerContext) 
 
 
 def link_key(lock: Lock, host: str = "", path: str = "/") -> str:
-    return lock.mint("bob", host, path, None)
+    return lock.mint("bob", host, path, None, 1)
 
 
 async def test_a_link_asks_for_a_click_first(ctx: ServerContext) -> None:
@@ -395,10 +398,10 @@ async def test_a_link_asks_for_a_click_first(ctx: ServerContext) -> None:
     for method in ("GET", "HEAD"):
         page = await ask(ctx, lock, method, HOME, f"/_wildburrow/login/link/{key}?x=1")
         assert (page.status, page.body) == (200, f"{HOME} /_wildburrow/login/link/{key}".encode())
-    assert lock.entries["bob"].used is None
+    assert lock.entries[entry_id(LINK, "bob")].used is None
     landed = await ask(ctx, lock, "POST", HOME, f"/_wildburrow/login/link/{key}")
     assert (landed.status, landed.header("Location")) == (303, "/")
-    assert landed.cookies()[0].startswith("wildburrow=bob.0.")
+    assert landed.cookies()[0].startswith("wildburrow=link:bob.0.")
 
 
 async def test_a_link_to_another_host_says_so_and_lands_there(ctx: ServerContext) -> None:
@@ -412,7 +415,7 @@ async def test_a_link_to_another_host_says_so_and_lands_there(ctx: ServerContext
 async def test_a_link_to_a_host_the_tunnel_lost_lands_at_home(ctx: ServerContext) -> None:
     lock = locked(ctx, names=("foo",))
     for host in ("gone.example.com", HOME):
-        key = lock.mint(f"to-{host}", host, "/p", None)
+        key = lock.mint(f"to-{host}", host, "/p", None, 1)
         assert (await ask(ctx, lock, "POST", HOME, f"/_wildburrow/login/link/{key}")).header("Location") == "/p"
 
 
@@ -443,7 +446,7 @@ async def test_the_domain_homes_locks_on_wildcards(ctx: ServerContext) -> None:
     length, body = posted({"username": "alice", "password": "pw"})
     inside = Answer(await gate.home(ctx, request("POST", "example.com", prefix, length), body))
     assert (inside.status, inside.body) == (200, b"You&#x27;re in")
-    assert inside.cookies()[0].startswith(f"wildburrow-{lock.id}=alice.0.")
+    assert inside.cookies()[0].startswith(f"wildburrow-{lock.id}=password:alice.0.")
     key = link_key(lock)
     opened = Answer(await gate.home(ctx, request("POST", "example.com", f"{prefix}/link/{key}"), nothing))
     assert (opened.status, opened.body) == (200, b"You&#x27;re in")
@@ -495,7 +498,7 @@ async def test_a_link_takes_only_a_look_or_a_click(ctx: ServerContext) -> None:
     lock = locked(ctx)
     key = link_key(lock)
     assert (await ask(ctx, lock, "PUT", HOME, f"/_wildburrow/login/link/{key}")).status == 405
-    assert lock.entries["bob"].used is None
+    assert lock.entries[entry_id(LINK, "bob")].used is None
 
 
 async def test_a_form_missing_its_fields_logs_no_one_in(ctx: ServerContext) -> None:
@@ -530,7 +533,7 @@ async def test_a_claim_without_a_code_starts_over(ctx: ServerContext) -> None:
 
 async def test_the_lock_takes_out_its_cookies_whatever_their_value(ctx: ServerContext) -> None:
     lock = locked(ctx)
-    cookie = lock.cookie(OTHER, lock.entries["alice"], 0)
+    cookie = lock.cookie(OTHER, lock.entries[entry_id(PASSWORD, "alice")], 0)
     headers = (f"Cookie: wildburrow={cookie}; wildburrow-pending=1.v=x; keep=a=b",)
     outcome = await gate.guard(ctx, lock, request("GET", OTHER, "/x", *headers), nothing)
     assert isinstance(outcome, Admitted)
@@ -569,3 +572,73 @@ async def test_a_failed_login_still_says_where_the_visitor_is_going(ctx: ServerC
         length, body = posted({**handoff, "username": "alice", "password": "nope"})
         page = await ask(ctx, lock, "POST", HOME, "/_wildburrow/login", length, body=body)
         assert (page.status, page.body) == (status, f"{OTHER}|{error}".encode())
+
+
+class Written:
+    """What the gate writes in the server's record, by who and how, without the request it came with."""
+
+    def __init__(self, ctx: ServerContext, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.seen: list[tuple[Any, ...]] = []
+        record = ctx.record
+        monkeypatch.setattr(record, "login_attempt", self.login_attempt)
+        monkeypatch.setattr(record, "link_opened", self.link_opened)
+        monkeypatch.setattr(record, "redeemed", self.redeemed)
+
+    def login_attempt(
+        self, lock: Lock, via: str, label: str | None, entry: Any, peer: Any, request: Any, reason: str | None
+    ) -> None:
+        self.seen.append(("login", via, label, entry and entry.label, reason))
+
+    def link_opened(self, lock: Lock, entry: Any, peer: Any, request: Any, used: bool) -> None:
+        self.seen.append(("link", entry.label, used))
+
+    def redeemed(self, code: str) -> None:
+        self.seen.append(("redeemed", code))
+
+
+@pytest.fixture
+def written(ctx: ServerContext, monkeypatch: pytest.MonkeyPatch) -> Written:
+    return Written(ctx, monkeypatch)
+
+
+async def test_every_form_login_is_recorded_with_who_tried(ctx: ServerContext, written: Written) -> None:
+    ctx.locking = Locking(attempts=1)
+    lock = locked(ctx)
+    for form in ({"username": "alice", "password": "pw"}, {"username": "alice", "password": "x"}, {"password": "x"}):
+        length, body = posted(form)
+        await ask(ctx, lock, "POST", HOME, "/_wildburrow/login", length, body=body)
+    assert written.seen == [
+        ("login", "form", "alice", "alice", None),
+        ("login", "form", "alice", None, "wrong-password"),
+        ("login", "form", "", None, "limited"),
+    ]
+
+
+async def test_every_header_login_is_recorded_with_who_tried(ctx: ServerContext, written: Written) -> None:
+    ctx.locking = Locking(attempts=1)
+    lock = locked(ctx)
+    for given in ("alice:pw", "bob:x", "carol:pw"):
+        await gate.guard(ctx, lock, request("GET", OTHER, "/x", f"X-Wildburrow-Auth: {given}"), nothing)
+    assert written.seen == [
+        ("login", "header", "alice", "alice", None),
+        ("login", "header", "bob", None, "wrong-password"),
+        ("login", "header", "carol", None, "limited"),
+    ]
+
+
+async def test_a_link_is_recorded_when_shown_and_when_used(ctx: ServerContext, written: Written) -> None:
+    lock = locked(ctx)
+    key = link_key(lock)
+    await ask(ctx, lock, "GET", HOME, f"/_wildburrow/login/link/{key}")
+    await ask(ctx, lock, "POST", HOME, f"/_wildburrow/login/link/{key}")
+    assert written.seen == [("link", "bob", False), ("link", "bob", True), ("login", "link", "bob", "bob", None)]
+
+
+async def test_a_claimed_code_is_recorded_by_its_digest(ctx: ServerContext, written: Written) -> None:
+    lock = locked(ctx)
+    query = urlencode({"host": OTHER, "to": "/x", "challenge": challenge(VERIFIER)})
+    sent = await ask(ctx, lock, "GET", HOME, f"/_wildburrow/login/vouch?{query}", logged_in(lock, HOME))
+    claim = urlsplit(sent.header("Location") or "")
+    [code] = parse_qs(claim.query)["code"]
+    await ask(ctx, lock, "GET", OTHER, f"{claim.path}?{claim.query}", f"Cookie: wildburrow-pending=1.{VERIFIER}")
+    assert written.seen == [("redeemed", hashlib.sha256(code.encode()).hexdigest())]

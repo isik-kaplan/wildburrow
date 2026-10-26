@@ -155,7 +155,10 @@ async def test_unknown_messages_are_ignored_and_a_closed_session_reconnects() ->
             "error: authentication failed",
         ],
     )
-    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "bind", "names": ["app"]}]
+    assert control.sent == [
+        {"type": "hello", "method": "token", "token": "t", **websocket.CLIENT},
+        {"type": "bind", "names": ["app"]},
+    ]
 
 
 async def test_rejections_end_the_client() -> None:
@@ -329,7 +332,7 @@ def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> 
 
     class Recording:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            seen.append((*args, kwargs.get("lock")))
+            seen.append((*args, kwargs.get("lock"), kwargs.get("index")))
 
         async def run(self) -> int:
             return 5
@@ -338,10 +341,10 @@ def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> 
     config = ClientConfig("s", auth="token", url="http://s")
     lock = LockRequest({"alice": "x"})
     assert websocket.run(config, 9, ["a"], "127.0.0.1") == 5
-    assert websocket.run(config, 9, ["a"], "127.0.0.1", str.upper, lock) == 5
+    assert websocket.run(config, 9, ["a"], "127.0.0.1", str.upper, lock, False) == 5
     assert seen == [
-        (config, 9, ["a"], "127.0.0.1", getpass.getpass, None),
-        (config, 9, ["a"], "127.0.0.1", str.upper, lock),
+        (config, 9, ["a"], "127.0.0.1", getpass.getpass, None, None),
+        (config, 9, ["a"], "127.0.0.1", str.upper, lock, False),
     ]
 
 
@@ -498,7 +501,7 @@ HELD = [{"name": "app", "yours": True}, {"name": "pic", "yours": False}]
 async def test_held_names_logs_in_and_asks_for_them() -> None:
     control = FakeControl([welcome(), protocol.encode("status", message="x"), protocol.encode("names", names=HELD)])
     assert await websocket.held_names(TOKEN_CONFIG, input, fake_connector(control)) == HELD
-    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "names"}]
+    assert control.sent == [{"type": "hello", "method": "token", "token": "t", **websocket.CLIENT}, {"type": "names"}]
 
 
 @pytest.mark.parametrize(
@@ -518,14 +521,15 @@ async def test_held_names_says_why_it_has_none(control: Callable[[], FakeControl
 
 
 def welcomed() -> str:
-    return protocol.encode("welcome", identity="ci", features=["sessions"])
+    return protocol.encode("welcome", identity="ci", features=list(protocol.SINCE))
 
 
 SESSIONS = [{"id": "a1", "who": "alice"}]
+REACH = {"admin": True, "see": "own", "kick": "own"}
 
 
 PASSWORD_CONFIG = ClientConfig("s", user="me", auth="password", url="http://s")
-PASSWORD_HELLO = {"type": "hello", "method": "password", "username": "me", "password": "typed"}
+PASSWORD_HELLO = {"type": "hello", "method": "password", "username": "me", "password": "typed", **websocket.CLIENT}
 
 
 @pytest.mark.parametrize(
@@ -534,11 +538,15 @@ PASSWORD_HELLO = {"type": "hello", "method": "password", "username": "me", "pass
         (lambda c: websocket.held_names(PASSWORD_CONFIG, lambda p: "typed", c), protocol.encode("names", names=[])),
         (lambda c: websocket.sessions(PASSWORD_CONFIG, lambda p: "typed", c), protocol.encode("sessions", sessions=[])),
         (
-            lambda c: websocket.kick(PASSWORD_CONFIG, {"who": "a"}, lambda p: "typed", c),
-            protocol.encode("kicked", sessions=[], refused=[]),
+            lambda c: websocket.kick(PASSWORD_CONFIG, lambda listed, reach: [], lambda p: "typed", c),
+            protocol.encode("sessions", sessions=[]),
+        ),
+        (
+            lambda c: websocket.deny(PASSWORD_CONFIG, ["t"], lambda p: "typed", c),
+            protocol.encode("denied", tokens=["t"], ended=[]),
         ),
     ],
-    ids=["names", "sessions", "kick"],
+    ids=["names", "sessions", "kick", "deny"],
 )
 async def test_requests_ask_the_password_with_the_prompt_given(request_server: Callable, answer: str) -> None:
     control = FakeControl([welcomed(), answer])
@@ -548,10 +556,18 @@ async def test_requests_ask_the_password_with_the_prompt_given(request_server: C
 
 async def test_sessions_asks_a_server_that_lists_them() -> None:
     control = FakeControl(
-        [welcomed(), protocol.encode("names", names=[]), protocol.encode("sessions", sessions=SESSIONS)]
+        [welcomed(), protocol.encode("names", names=[]), protocol.encode("sessions", sessions=SESSIONS, reach=REACH)]
     )
-    assert await websocket.sessions(TOKEN_CONFIG, input, fake_connector(control)) == SESSIONS
-    assert control.sent == [{"type": "hello", "method": "token", "token": "t"}, {"type": "sessions"}]
+    assert await websocket.sessions(TOKEN_CONFIG, input, fake_connector(control)) == (SESSIONS, REACH)
+
+
+async def test_a_server_before_0_5_0_sends_no_reach() -> None:
+    control = FakeControl([welcomed(), protocol.encode("sessions", sessions=[])])
+    assert await websocket.sessions(TOKEN_CONFIG, input, fake_connector(control)) == ([], None)
+    assert control.sent == [
+        {"type": "hello", "method": "token", "token": "t", **websocket.CLIENT},
+        {"type": "sessions"},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -559,16 +575,39 @@ async def test_sessions_asks_a_server_that_lists_them() -> None:
 )
 async def test_kick_names_what_to_end(target: dict[str, str]) -> None:
     answer = protocol.encode("kicked", sessions=SESSIONS, refused=["b2"])
-    control = FakeControl([welcomed(), protocol.encode("sessions", sessions=[]), answer])
-    assert await websocket.kick(TOKEN_CONFIG, target, input, fake_connector(control)) == protocol.decode(answer)
-    assert control.sent[1] == {"type": "kick", **target}
+    control = FakeControl([welcomed(), protocol.encode("sessions", sessions=SESSIONS, reach=REACH), answer])
+    picked: list[tuple] = []
+    pick = lambda listed, reach: picked.append((listed, reach)) or [target]  # noqa: E731
+    assert await websocket.kick(TOKEN_CONFIG, pick, input, fake_connector(control)) == {
+        "sessions": SESSIONS, "refused": ["b2"], "reach": REACH,
+    }  # fmt: skip
+    assert picked == [(SESSIONS, REACH)]
+    assert control.sent[1:] == [{"type": "sessions"}, {"type": "kick", **target}]
+
+
+async def test_kick_ends_each_target_over_one_login() -> None:
+    first = protocol.encode("kicked", sessions=SESSIONS, refused=[])
+    second = protocol.encode("kicked", sessions=[], refused=["b2"])
+    control = FakeControl([welcomed(), protocol.encode("sessions", sessions=[]), first, second])
+    pick = lambda listed, reach: [{"who": "a"}, {"name": "b"}]  # noqa: E731
+    answer = await websocket.kick(TOKEN_CONFIG, pick, input, fake_connector(control))
+    assert answer == {"sessions": SESSIONS, "refused": ["b2"], "reach": None}
+    assert control.sent[2:] == [{"type": "kick", "who": "a"}, {"type": "kick", "name": "b"}]
+
+
+async def test_ending_logins_ends_each_over_one_login() -> None:
+    answers = [protocol.encode("ended-login", who=who, ended=[]) for who in ("a", "b")]
+    control = FakeControl([welcomed_with(protocol.LOCK), *answers])
+    ended = await websocket.end_logins(TOKEN_CONFIG, ["a", "b"], input, fake_connector(control))
+    assert ended == [protocol.decode(answer) for answer in answers]
+    assert control.sent[1:] == [{"type": "end-login", "who": "a"}, {"type": "end-login", "who": "b"}]
 
 
 @pytest.mark.parametrize(
     "request_server",
     [
         lambda c: websocket.sessions(TOKEN_CONFIG, input, c),
-        lambda c: websocket.kick(TOKEN_CONFIG, {"who": "a"}, input, c),
+        lambda c: websocket.kick(TOKEN_CONFIG, lambda listed, reach: [], input, c),
     ],
     ids=["sessions", "kick"],
 )
@@ -587,7 +626,13 @@ async def test_held_names_asks_the_password_and_connects_for_real_by_default(mon
     with pytest.raises(ClientError, match="without answering"):
         await websocket.held_names(ClientConfig("s", user="me", auth="password", url="http://s"))
     assert prompts == ["password: "]
-    assert control.sent[0] == {"type": "hello", "method": "password", "username": "me", "password": "pw"}
+    assert control.sent[0] == {
+        "type": "hello",
+        "method": "password",
+        "username": "me",
+        "password": "pw",
+        **websocket.CLIENT,
+    }
 
 
 def welcomed_with(*features: str) -> str:
@@ -623,7 +668,7 @@ async def test_a_locked_tunnel_keeps_what_the_server_says() -> None:
         "type": "bind",
         "names": ["app"],
         "lock": {
-            "secret": lock.secret, "users": {"alice": "x"}, "links": {}, "ended": [],
+            "secret": lock.secret, "users": {"alice": "x"}, "links": {}, "ended": [], "counts": {},
             "mint": [{"label": "l", "expires": None}], "settings": {},
         },
     }  # fmt: skip
@@ -645,7 +690,7 @@ async def test_a_locked_tunnel_keeps_what_the_server_says() -> None:
             protocol.encode("linked", label="link-1", url="x"),
         ),
         (
-            lambda c: websocket.end_login(TOKEN_CONFIG, "bob", input, c),
+            lambda c: websocket.end_logins(TOKEN_CONFIG, ["bob"], input, c),
             {"type": "end-login", "who": "bob"},
             protocol.encode("ended-login", who="bob", ended=[]),
         ),
@@ -655,7 +700,8 @@ async def test_a_locked_tunnel_keeps_what_the_server_says() -> None:
 async def test_the_login_commands_ask_a_server_that_locks(request_server: Callable, sent: dict, answer: str) -> None:
     control = FakeControl([welcomed_with(protocol.LOCK), answer])
     result = await request_server(fake_connector(control))
-    assert result == ([1] if sent["type"] == "logins" else protocol.decode(answer))
+    expected = {"logins": [1], "end-login": [protocol.decode(answer)]}.get(sent["type"], protocol.decode(answer))
+    assert result == expected
     assert control.sent[1] == sent
     older = FakeControl([welcomed_with(protocol.SESSIONS)])
     with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.4\.0 or later$"):
@@ -667,7 +713,7 @@ async def test_the_login_commands_ask_a_server_that_locks(request_server: Callab
     [
         lambda config, ask, c: websocket.logins(config, ask, c),
         lambda config, ask, c: websocket.link(config, {"url": "u"}, ask, c),
-        lambda config, ask, c: websocket.end_login(config, "bob", ask, c),
+        lambda config, ask, c: websocket.end_logins(config, ["bob"], ask, c),
     ],
     ids=["logins", "link", "end-login"],
 )
@@ -678,3 +724,35 @@ async def test_the_login_commands_ask_for_the_password(request_server: Callable)
     with pytest.raises(ClientError, match="without answering"):
         await request_server(config, lambda prompt: prompts.append(prompt) or "pw", fake_connector(control))
     assert prompts == ["password: "]
+
+
+@pytest.mark.parametrize("index", [True, False])
+async def test_asking_about_search_engines_needs_a_server_that_listens(index: bool) -> None:
+    lines: list[str] = []
+    connector = fake_connector(FakeControl([welcomed_with(protocol.SESSIONS, protocol.LOCK)]))
+    config = ClientConfig("s", auth="token", token="t", url="http://s")
+    client = Client(config, 9, ["app"], "127.0.0.1", out=lines.append, connector=connector, index=index)
+    assert await client.run() == 1
+    assert lines == ["error: s runs an older wildburrow; this needs 0.5.0 or later"]
+
+
+@pytest.mark.parametrize(("index", "sent"), [(True, {"index": True}), (False, {"index": False}), (None, {})])
+async def test_the_bind_says_what_the_client_asked_about_search_engines(index: bool | None, sent: dict) -> None:
+    control = FakeControl([welcomed_with(protocol.SESSIONS, protocol.LOCK, protocol.INDEX)])
+    config = ClientConfig("s", auth="token", token="t", url="http://s", reconnect=False)
+    client = Client(
+        config, 9, ["app"], "127.0.0.1", out=lambda line: None, connector=fake_connector(control), index=index
+    )
+    await client.run()
+    assert control.sent[1] == {"type": "bind", "names": ["app"], **sent}
+
+
+async def test_denying_needs_a_server_that_denies() -> None:
+    control = FakeControl([welcomed_with(protocol.SESSIONS, protocol.LOCK)])
+    with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.5\.0 or later$"):
+        await websocket.deny(TOKEN_CONFIG, ["t"], input, fake_connector(control))
+    answered = FakeControl([welcomed_with(protocol.DENY), protocol.encode("denied", tokens=["t"], ended=["s1"])])
+    assert await websocket.deny(TOKEN_CONFIG, ["t"], input, fake_connector(answered)) == {
+        "type": "denied", "tokens": ["t"], "ended": ["s1"],
+    }  # fmt: skip
+    assert answered.sent[1] == {"type": "deny", "tokens": ["t"]}

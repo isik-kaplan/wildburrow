@@ -108,7 +108,7 @@ class Clock:
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
-        (PasswordSettings("plain"), "hash: not an argon2 hash; create one with `wildburrow hash-password`"),
+        (PasswordSettings("plain"), "hash: not an argon2 hash; create one with `wildburrow passwords hash`"),
         (PasswordSettings(HASH, max_failures=0), "max_failures and block_seconds must be at least 1"),
         (PasswordSettings(HASH, block_seconds=0), "max_failures and block_seconds must be at least 1"),
     ],

@@ -7,6 +7,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`wildburrow connect` alone, in a terminal, asks** for the port and names, whether to lock the tunnel and who may
+  get in, and, when you want to change them, where the local port listens and every lock setting. The menu's "Open a
+  tunnel" runs it, so it asks the same.
+- **`kick` takes several targets and works out what each means**: a session id, an identity or a name held. A target
+  whose readings land on different sessions is refused, with each reading listed; `--who` and `--name` still pick
+  one, and repeat. Given nothing in a terminal, `kick` lists the sessions and asks which to end. Every target is ended
+  over one login.
+- **`links end` takes several names**, all ended over one login.
+- **The server keeps a record** of what happens on it in SQLite, in memory by default or on file with
+  `WILDBURROW_DATABASE`: who logged in, sessions and what ended them, commands, tunnels, locks and their logins,
+  every request through a tunnel with its status, certificates, DNS changes and its own log lines.
+  `WILDBURROW_DATABASE_RECORD` says how much (`everything` adds the traffic itself, `minimal` keeps only what's live)
+  and `WILDBURROW_DATABASE_KEEP` for how long. See [docs/database.md](docs/database.md).
+- **`wildburrow tokens deny ID`** stops a token logging in and ends its sessions, for an admin of the server, without
+  a restart; on file, it stays denied across restarts.
+- **A link can share a password's name**: `--lock anil --links anil` lets anil in either way, both logging in as
+  `anil`. Ending the name ends both.
+- **Links that work more than once.** `--link-uses N` or `any`, and `links add --uses N`; `links` says how often each
+  has been used.
+- **`links` says more**: each password's or link's state, its uses, how many logins it has had, when it was last seen
+  and when it expires. The counts and last-seen times now survive a client's reconnect and a server restart.
+- **Tunnels keep search engines away.** Every response through a tunnel carries `X-Robots-Tag: noindex, nofollow`, as
+  does everything the server answers itself. A client lets its tunnel be indexed with `--index`, or keeps it out with
+  `--no-index`; the server's `WILDBURROW_INDEX` decides the default (`opt-in`, so tunnels stay out unless asked) or
+  forbids indexing outright (`never`). Needs a 0.5.0 server for a client to choose.
+- **The lock checks every request on a connection**, not only the first, so a kept-alive connection can't carry a
+  request past it or the lock's cookie to your app. A later request on the connection for another host is answered
+  `421 Misdirected Request` instead of reaching the first one's tunnel.
+- **An admin kept to their own sessions is told so.** When the server's `WILDBURROW_SEE` or `WILDBURROW_KICK` is `own`
+  or `none`, an admin whose `tunnels` lists no one, or whose `kick` reaches no one, hears which setting stops them.
+  The server now says how far it reaches in its answers to both.
+- **`wildburrow config`** lists every client setting, its value and where it comes from; `config set NAME VALUE` saves
+  one in config.toml and `config unset NAME` forgets it. Saved settings sit below options, variables and answers, and a
+  question starts from what's saved.
+- **Every client setting has a variable**: `WILDBURROW_CLIENT_` and its name, as in `WILDBURROW_CLIENT_SERVER`,
+  `WILDBURROW_CLIENT_LOCAL_HOST` or `WILDBURROW_CLIENT_AUTH`.
+- **`names`, `tunnels`, `kick` and `links` take the connection options** `connect` takes (`--token`, `--auth`,
+  `--transport` and the rest), for that run.
+- **`--lock-page-file`, `--lock-link-page-file` and `--lock-message-page-file`** read a page from a file, as the
+  `_FILE` variables do; `--lock-page` and the others take the HTML itself.
+
+### Changed
+
+- **Commands come in noun groups.** `wildburrow token NAME` is `wildburrow tokens new NAME`; `wildburrow link URL` is
+  `wildburrow links add URL`; `wildburrow links --end WHO` is `wildburrow links end WHO...`. `tokens` and `links` alone
+  still list. `wildburrow hash-password` is `wildburrow passwords hash`. `logout` forgets only the login, keeping
+  settings saved with `config set`. The old spellings are gone.
+- **Lock options no longer depend on where they go.** `--lock` always takes `USER[:PASSWORD]`, and `--lock-guest`
+  makes up a user; `--link` makes one link, and `--links N|LABELS` takes the count or labels `--link` took.
+  `WILDBURROW_LINK` is now a yes or no for one link; the count or labels it held go in `WILDBURROW_LINKS`, and
+  `WILDBURROW_LOCK_GUEST` stands for `--lock-guest`.
+- **Client variables start with `WILDBURROW_CLIENT_`**, so they never read as the server's: `WILDBURROW_TOKEN` is
+  `WILDBURROW_CLIENT_TOKEN`, and `WILDBURROW_LOCK`, `_LOCK_FILE`, `_LOCK_*`, `_LINK`, `_LINKS` and `_LINK_EXPIRES`
+  each gain `CLIENT_` the same way.
+- **The server's suggestion to clients** is `WILDBURROW_SUGGESTED_TRANSPORT` and `WILDBURROW_SUGGESTED_AUTH`, not
+  `WILDBURROW_CLIENT_TRANSPORT` and `WILDBURROW_CLIENT_AUTH`.
+- **Admins see and end everyone's sessions by default.** `WILDBURROW_SEE` and `WILDBURROW_KICK` default to `admins`
+  instead of `own`: an admin's `tunnels` lists everyone who isn't an admin, with their addresses, and `kick` reaches
+  them. Others still reach only their own, and admins still don't reach each other. Set both to `own` for the old
+  behaviour.
+- **The lock's pages have a new look**, sharp-cornered and compact, in light or dark as the visitor's browser
+  prefers.
+- **`--lock-page FILE` and its two siblings** are `--lock-page-file FILE` and its siblings.
+- A setting that can't be, given as an option or a variable, is a usage error: the usage line, then `Error:` and what
+  was wrong, naming the option or variable as it was given.
+- A client setting read from a `_FILE` variable, such as `WILDBURROW_LOCK_FILE`, loses only its final line break,
+  not all the whitespace around it.
+
 ## [0.4.1] - 2026-10-24
 
 ### Fixed

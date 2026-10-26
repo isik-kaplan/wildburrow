@@ -28,6 +28,7 @@ classifiers = [
 requires-python = ">=3.14.4"
 dependencies = [
     "click==8.5.0",
+    "isik[cli]==0.35.1",
     "questionary==2.1.1",
     "websockets==17.2",
 ]

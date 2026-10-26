@@ -27,7 +27,7 @@ class PasswordAuth:
         try:
             extract_parameters(settings.hash)
         except InvalidHashError:
-            raise ConfigError("hash: not an argon2 hash; create one with `wildburrow hash-password`") from None
+            raise ConfigError("hash: not an argon2 hash; create one with `wildburrow passwords hash`") from None
         if settings.max_failures < 1 or settings.block_seconds < 1:
             raise ConfigError("max_failures and block_seconds must be at least 1")
         self._settings = settings

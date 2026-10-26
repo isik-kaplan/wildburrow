@@ -10,12 +10,15 @@ Server:
   --domain DOMAIN                 required
   --transports TRANSPORTS         default: ssh
   --auth AUTH                     default: key
-  --client-transport CLIENT_TRANSPORT
+  --suggested-transport SUGGESTED_TRANSPORT
                                   default: the first clients can log in over
-  --client-auth CLIENT_AUTH       default: its first method in AUTH
+  --suggested-auth SUGGESTED_AUTH
+                                  default: its first method in AUTH
   --admins ADMINS                 default: signers
-  --see SEE                       default: own
-  --kick KICK                     default: own
+  --see SEE                       default: admins
+  --kick KICK                     default: admins
+  --index INDEX                   default: opt-in
+  --database DATABASE             default: in memory
   --http-host HTTP_HOST           default: 0.0.0.0
   --http-port HTTP_PORT           default: 80
   --max-depth MAX_DEPTH           default: 5
@@ -61,6 +64,14 @@ Locks:
   --lock-attempts ATTEMPTS        default: 10
   --lock-code-expires CODE_EXPIRES
                                   default: 10m
+
+Database:
+  --database-keep KEEP            default: forever on file, 1d in memory
+  --database-purge-every PURGE_EVERY
+                                  default: 1d on file, 1h in memory, once KEEP is set
+  --database-record RECORD        default: activity
+  --database-traffic-max TRAFFIC_MAX
+                                  default: no cap
 
 transport plugin ssh:
   --ssh-host HOST                 default: 0.0.0.0

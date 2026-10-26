@@ -1,8 +1,22 @@
-Usage: wildburrow links [OPTIONS]
+Usage: wildburrow links [OPTIONS] [COMMAND] [ARGS]...
 
-  List who may get into your locked tunnels, and who has. Logs in as a tunnel would.
+  List who may get into your locked tunnels, and who has; add or end their links and passwords.
 
 Options:
-  --end WHO      end this password or link, logging out whoever used it
-  --server TEXT  server to ask instead of the saved one
-  -h, --help     Show this message and exit.
+  --server TEXT                 server to use instead of the saved one
+  --token TEXT                  token to log in with; means --auth token
+  --ssh-port INTEGER            SSH port (1-65535) (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   how to reach the server (default: ssh)
+  --auth [key|password|token]   how to log in (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  -h, --help                    Show this message and exit.
+
+Commands:
+  add  Make one more one-time link to a locked tunnel of yours, landing on URL.
+  end  End passwords or links, by the WHO `wildburrow links` lists, logging out whoever used...

@@ -75,6 +75,10 @@ class Tunnel(Destination, Protocol):
     session: Session | None
     # What visitors need before they reach it; None for an open tunnel.
     lock: Lock | None
+    # Whether its client asked for search engines to index it; None for the server's default.
+    index: bool | None
+    # Its binds in the server's record, closed when it lets go of its names.
+    records: list[int]
 
 
 def bound_port(server: Any) -> int:

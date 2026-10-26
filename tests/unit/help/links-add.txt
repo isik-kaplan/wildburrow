@@ -1,0 +1,22 @@
+Usage: wildburrow links add [OPTIONS] URL
+
+  Make one more one-time link to a locked tunnel of yours, landing on URL.
+
+Options:
+  --server TEXT                 server to use instead of the saved one
+  --token TEXT                  token to log in with; means --auth token
+  --ssh-port INTEGER            SSH port (1-65535) (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   how to reach the server (default: ssh)
+  --auth [key|password|token]   how to log in (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  --as LABEL                    label it, as your app is told who logged in (default: the next
+                                link-N)
+  --expires DURATION            stop it working after this long (default: with the tunnel)
+  --uses N|any                  how often it works: a number, or any for no limit (default: 1)
+  -h, --help                    Show this message and exit.

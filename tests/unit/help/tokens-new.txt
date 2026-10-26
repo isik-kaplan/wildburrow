@@ -1,10 +1,10 @@
-Usage: wildburrow token [OPTIONS] NAME
+Usage: wildburrow tokens new [OPTIONS] [NAME]
 
   Mint a token signed with your SSH key, for a server that trusts the key in AUTH_TOKEN_SIGNERS.
 
 Options:
   --names TEXT     names it may claim, comma-separated with * for any one label, or any
-  --expires TEXT   like 30m, 12h, 7d or 2w, or never  [default: 7d]
+  --expires TEXT   like 30m, 12h, 7d or 2w, or never (default: 7d)
   --identity TEXT  SSH key to sign with (default: the saved login's, else the first in ~/.ssh)
   --server TEXT    server for the login line (default: the saved login's)
   -y, --yes        don't ask first

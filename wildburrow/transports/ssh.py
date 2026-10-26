@@ -14,7 +14,6 @@ from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
-from wildburrow.core.registry import Registry
 from wildburrow.core.sessions import Session
 from wildburrow.core.types import Identity, PasswordCredential, Peer, PublicKeyCredential, bound_port
 
@@ -50,6 +49,9 @@ class SSHTunnel:
         self.session: Session | None = session
         # Only the websocket client can ask for a lock.
         self.lock: Lock | None = None
+        # Only the websocket client can ask; an ssh tunnel takes the server's default.
+        self.index: bool | None = None
+        self.records: list[int] = []
         self._conn = conn
         self._host = host
         self._port = port
@@ -62,9 +64,9 @@ class SSHTunnel:
 
 
 class _Listener(asyncssh.SSHListener):
-    def __init__(self, registry: Registry, name: Name, tunnel: SSHTunnel, port: int) -> None:
+    def __init__(self, ctx: ServerContext, name: Name, tunnel: SSHTunnel, port: int) -> None:
         super().__init__()
-        self._registry = registry
+        self._ctx = ctx
         self._name = name
         self._binding = tunnel
         self._port = port
@@ -73,7 +75,7 @@ class _Listener(asyncssh.SSHListener):
         return self._port
 
     def close(self) -> None:
-        self._registry.unbind(self._name, self._binding)
+        self._ctx.release(self._binding, [self._name])
 
 
 class _Client(asyncssh.SSHServer):
@@ -87,6 +89,8 @@ class _Client(asyncssh.SSHServer):
         self._process: asyncssh.SSHServerProcess | None = None
         self._ending: asyncio.Task[None] | None = None
         self._rejected = False
+        # Each key's answer for this connection: ssh asks about a key once to offer it and again with its signature.
+        self._answers: dict[PublicKeyCredential | PasswordCredential, Identity | None] = {}
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
@@ -97,11 +101,11 @@ class _Client(asyncssh.SSHServer):
         self._closed = True
         self._live.discard(self._conn)
         if self._session is not None:
-            self._ctx.sessions.close(self._session)
+            self._ctx.close_session(self._session)
 
     def auth_completed(self) -> None:
         assert self._identity is not None  # noqa: S101
-        self._session = self._ctx.sessions.open(self._identity, "ssh", self._peer, self.end)
+        self._session = self._ctx.open_session(self._identity, "ssh", self._peer, self.end, {})
 
     def begin_auth(self, username: str) -> bool:
         return True
@@ -119,7 +123,9 @@ class _Client(asyncssh.SSHServer):
         return await self._check(PasswordCredential(username, password))
 
     async def _check(self, credential: PublicKeyCredential | PasswordCredential) -> bool:
-        identity = await self._ctx.authenticator.authenticate(credential, self._peer)
+        if credential not in self._answers:
+            self._answers[credential] = await self._ctx.authenticate("ssh", credential, self._peer)
+        identity = self._answers[credential]
         if identity is None:
             log.info("auth failed for %s from %s", credential.username, self._peer.host)
             return False
@@ -139,12 +145,12 @@ class _Client(asyncssh.SSHServer):
             self.reject(f"rejected: {exc}")
             return False
         if self._closed:
-            self._ctx.registry.unbind(name, tunnel)
+            self._ctx.release(tunnel, [name])
             # The connection is gone, so nothing reads this answer.
             return False  # pragma: no mutate
         log.info("%s bound %s from %s", tunnel.identity.name, name, self._peer.host)
         self.notify(f"{protocol.READY}{self._ctx.url(name)}")
-        return _Listener(self._ctx.registry, name, tunnel, port)
+        return _Listener(self._ctx, name, tunnel, port)
 
     def notify(self, message: str) -> None:
         if self._process is None:

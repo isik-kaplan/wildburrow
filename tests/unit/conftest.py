@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
+from isik.cli.testing import questionary_io
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import PipeInput, create_pipe_input
 from prompt_toolkit.output.plain_text import PlainTextOutput
@@ -44,7 +45,9 @@ class Typist:
         keyboard: PipeInput = self.stack.enter_context(create_pipe_input())
         keyboard.send_text("".join(keys))
         keyboard.close()
-        ask.IO.update(input=keyboard, output=_Screen(self.screen))
+        screen = _Screen(self.screen)
+        ask.IO.update(input=keyboard, output=screen)
+        self.stack.enter_context(questionary_io(input=keyboard, output=screen))
 
     def showed(self, *lines: str) -> bool:
         """Whether these appeared, in this order: each prompt is left showing its question and then its answer."""

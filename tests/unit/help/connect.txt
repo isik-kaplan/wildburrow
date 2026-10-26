@@ -4,22 +4,28 @@ Usage: wildburrow connect [OPTIONS] PORT NAME...
 
 Options:
   --server TEXT                   server to use instead of the saved one
-  --local-host TEXT               where the local port listens  [default: localhost]
-  --ssh-port INTEGER              (default: 2222)
+  --token TEXT                    token to log in with; means --auth token
+  --ssh-port INTEGER              SSH port (1-65535) (default: 2222)
   --user TEXT                     SSH user (default: your local user)
-  --transport [ssh|websocket]     (default: ssh)
-  --auth [key|password|token]     (default: key)
+  --transport [ssh|websocket]     how to reach the server (default: ssh)
+  --auth [key|password|token]     how to log in (default: key)
   --identity TEXT                 SSH key for websocket
   --url TEXT                      websocket base URL override
   --reconnect / --no-reconnect    reconnect when the connection drops (default: on)
   --retry-delay SECONDS           first wait before reconnecting, doubled after each failure
                                   (default: 1)
   --retry-max SECONDS             longest wait between reconnects (default: 30)
-  --lock [USER[:PASSWORD]]        let USER in with PASSWORD, asked for or made up when left out;
-                                  alone, makes up both; repeatable
-  --link [N|LABELS]               one-time links: one alone, N of them, or one per comma-separated
-                                  label; repeatable
+  --local-host TEXT               where the local port listens (default: localhost)
+  --index / --no-index            let search engines index it (default: the server's)
+  --lock USER[:PASSWORD]          let USER in with PASSWORD, asked for or made up when left out;
+                                  repeatable
+  --lock-guest                    let in a made-up user with a made-up password
+  --link                          make a one-time link
+  --links N|LABELS                one-time links: N of them, or one per comma-separated label;
+                                  repeatable
   --link-expires DURATION         links stop working after this long (default: with the tunnel)
+  --link-uses N|any               how often each link works: a number, or any for no limit
+                                  (default: 1)
   --lock-path PATH                login path on the tunnel's hosts (default: the server's)
   --lock-cookie NAME              login cookie's name (default: the server's)
   --lock-header HEADER            header scripts log in with, as USER:PASSWORD (default: the
@@ -29,7 +35,10 @@ Options:
   --lock-confirm-links / --no-lock-confirm-links
                                   have a link wait for a click, so chat previews don't use it up
                                   (default: the server's)
-  --lock-page FILE                your own login page (default: the server's)
-  --lock-link-page FILE           your own page for opening a link (default: the server's)
-  --lock-message-page FILE        your own page for the lock's messages (default: the server's)
+  --lock-page HTML                your own login page (default: the server's)
+  --lock-page-file FILE           read --lock-page from FILE
+  --lock-link-page HTML           your own page for opening a link (default: the server's)
+  --lock-link-page-file FILE      read --lock-link-page from FILE
+  --lock-message-page HTML        your own page for the lock's messages (default: the server's)
+  --lock-message-page-file FILE   read --lock-message-page from FILE
   -h, --help                      Show this message and exit.

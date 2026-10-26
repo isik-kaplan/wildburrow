@@ -94,8 +94,8 @@ class Admins:
 @dataclass(frozen=True, slots=True)
 class Policy:
     admins: Admins = Admins()
-    see: Level = Level.OWN
-    kick: Level = Level.OWN
+    see: Level = Level.ADMINS
+    kick: Level = Level.ADMINS
 
     def __post_init__(self) -> None:
         if self.kick > self.see:
@@ -125,6 +125,9 @@ class Session:
     # Closes the connection, telling the client why.
     end: Callable[[str], None]
     timer: asyncio.TimerHandle | None = field(default=None, repr=False)
+    # Why the server ended it, when it did, and the recorded command that did, if one did.
+    reason: str | None = None
+    ended_by: int | None = None
 
 
 class Sessions:

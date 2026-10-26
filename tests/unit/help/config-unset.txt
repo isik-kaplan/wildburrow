@@ -1,0 +1,6 @@
+Usage: wildburrow config unset [OPTIONS] NAME
+
+  Forget the saved value of the client setting NAME.
+
+Options:
+  -h, --help  Show this message and exit.

@@ -14,6 +14,7 @@ from websockets.http11 import Request, Response
 from wildburrow import protocol
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import BindRejected, TunnelUnavailable
+from wildburrow.core.indexing import Indexing
 from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
 from wildburrow.core.sessions import Session
@@ -27,6 +28,14 @@ from wildburrow.core.types import (
 )
 
 log = logging.getLogger(__name__)
+# Each command a session may send, and the type of the answer it gets.
+ANSWERS = {
+    "names": "names", protocol.SESSIONS: protocol.SESSIONS, "kick": "kicked", "logins": "logins", "link": "linked",
+    "end-login": "ended-login", protocol.DENY: "denied",
+}  # fmt: skip
+# What a client from 0.5.0 says of itself in its hello.
+CLIENT_FIELDS = ("version", "platform")
+NEVER_INDEXED = "this server keeps every tunnel out of search engines, so it stays unindexed"
 
 # A close reason has to fit a control frame.
 MAX_REASON = 100
@@ -98,6 +107,8 @@ class WebSocketTunnel:
         self.identity = session.identity
         self.session: Session | None = session
         self.lock: Lock | None = None
+        self.index: bool | None = None
+        self.records: list[int] = []
         self._transport = transport
         self._outbox = outbox
 
@@ -174,7 +185,7 @@ class WebSocketTransport:
     async def _control(self, connection: ServerConnection, peer: Peer) -> None:
         try:
             async with asyncio.timeout(self.settings.login_timeout):
-                identity = await self._login(connection, peer)
+                identity, client = await self._login(connection, peer)
         except ConnectionClosed:
             return
         except (ProtocolError, ValueError, KeyError, TimeoutError) as exc:
@@ -186,7 +197,9 @@ class WebSocketTransport:
             return
         outbox = _Outbox(connection)
         outbox.put("welcome", identity=identity.name, features=list(protocol.SINCE))
-        session = self._ctx.sessions.open(identity, "websocket", peer, lambda reason: self._end(connection, reason))
+        session = self._ctx.open_session(
+            identity, "websocket", peer, lambda reason: self._end(connection, reason), client
+        )
         tunnel = WebSocketTunnel(self, outbox, session)
         bound: list[Name] = []
         try:
@@ -194,20 +207,11 @@ class WebSocketTransport:
                 message = protocol.decode(raw)
                 if message["type"] == "bind":
                     await self._bind(outbox, tunnel, message, bound)
-                elif message["type"] == "names":
-                    held = self._ctx.registry.holders().items()
-                    names = [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]
-                    outbox.put("names", names=names)
-                elif message["type"] == protocol.SESSIONS:
-                    outbox.put(protocol.SESSIONS, sessions=self._ctx.listing(session))
-                elif message["type"] == "kick":
-                    outbox.put("kicked", **self._ctx.kick(session, message))
-                elif message["type"] == "logins":
-                    outbox.put("logins", tunnels=self._ctx.logins(identity))
-                elif message["type"] == "link":
-                    outbox.put("linked", **self._ctx.mint(identity, message))
-                elif message["type"] == "end-login":
-                    outbox.put("ended-login", **self._ctx.end_login(identity, str(message["who"])))
+                elif message["type"] in ANSWERS:
+                    command = self._ctx.record.command(session, message["type"], message)
+                    answer = self._answer(session, message, command)
+                    outbox.put(ANSWERS[message["type"]], **answer)
+                    self._ctx.record.answered(command, recorded(answer))
                 elif message["type"] == "open-failed":
                     waiter = self.pending.get(str(message["id"]))
                     if waiter is not None and not waiter.done():
@@ -218,11 +222,30 @@ class WebSocketTransport:
             await outbox.flush_and_stop()
             await connection.close(protocol.CLOSE_PROTOCOL_ERROR, close_reason(exc))
         finally:
-            self._ctx.sessions.close(session)
-            for name in bound:
-                self._ctx.registry.unbind(name, tunnel)
+            self._ctx.close_session(session)
+            self._ctx.release(tunnel, bound)
             self._ctx.unlock(tunnel)
             await outbox.flush_and_stop()
+
+    def _answer(self, session: Session, message: dict[str, Any], command: int | None) -> dict[str, Any]:
+        """What `session` is told in answer to one of its commands, recorded as `command`."""
+        identity = session.identity
+        match message["type"]:
+            case "names":
+                held = self._ctx.registry.holders().items()
+                return {"names": [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]}
+            case protocol.SESSIONS:
+                return {"sessions": self._ctx.listing(session), "reach": self._ctx.reach(session)}
+            case "kick":
+                return self._ctx.kick(session, message, command)
+            case "logins":
+                return {"tunnels": self._ctx.logins(identity)}
+            case "link":
+                return self._ctx.mint(identity, message, command)
+            case "end-login":
+                return self._ctx.end_login(identity, str(message["who"]))
+            case _:
+                return self._ctx.deny(session, [str(token) for token in message["tokens"]], command)
 
     def _end(self, connection: ServerConnection, reason: str) -> None:
         task = asyncio.create_task(connection.close(protocol.CLOSE_ENDED, reason[:MAX_REASON]))
@@ -233,6 +256,10 @@ class WebSocketTransport:
     async def _bind(self, outbox: _Outbox, tunnel: WebSocketTunnel, message: dict[str, Any], bound: list[Name]) -> None:
         raws = _names(message)
         minted = None
+        if protocol.INDEX in message:
+            tunnel.index = bool(message[protocol.INDEX])
+            if tunnel.index and self._ctx.indexing is Indexing.NEVER:
+                outbox.put("status", message=NEVER_INDEXED)
         try:
             if "lock" in message:
                 changed = lambda state: outbox.put("lock-state", state=state)  # noqa: E731
@@ -253,7 +280,8 @@ class WebSocketTransport:
             log.info("%s locked %s", tunnel.identity.name, ", ".join(map(str, names)))
             outbox.put("locked", links=minted, state=tunnel.lock.state())
 
-    async def _login(self, connection: ServerConnection, peer: Peer) -> Identity | None:
+    async def _login(self, connection: ServerConnection, peer: Peer) -> tuple[Identity | None, dict[str, Any]]:
+        """Who the hello logs in as, and what the client says of itself in it."""
         hello = protocol.decode(await connection.recv())
         if hello["type"] != "hello":
             raise ProtocolError("expected hello")
@@ -267,7 +295,8 @@ class WebSocketTransport:
                 credential = await self._challenge(connection, str(hello["public_key"]))
             case method:
                 raise ProtocolError(f"unknown method {method!r}")
-        return await self._ctx.authenticator.authenticate(credential, peer)
+        client = {key: str(hello[key]) for key in CLIENT_FIELDS if key in hello}
+        return await self._ctx.authenticate(protocol.WEBSOCKET, credential, peer), client
 
     async def _challenge(self, connection: ServerConnection, key: str) -> SignedChallengeCredential:
         try:
@@ -284,3 +313,11 @@ class WebSocketTransport:
         if answer["type"] != "signature":
             raise ProtocolError("expected signature")
         return SignedChallengeCredential(public_key, message, str(answer["signature"]))
+
+
+def recorded(answer: dict[str, Any]) -> dict[str, Any]:
+    """`answer` as the record keeps it: a link's URL cut down to where it lands, so the record can't open it."""
+    if "url" in answer:
+        head, sep, _ = str(answer["url"]).partition("/link/")
+        return {**answer, "url": head + sep}
+    return answer

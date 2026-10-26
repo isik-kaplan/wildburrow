@@ -10,10 +10,12 @@ import tomllib
 from importlib.metadata import version
 from pathlib import Path
 
+import click
 import pytest
 from argon2 import PasswordHasher
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from isik.cli.testing import assert_reachable
 
 from tests.unit.conftest import CTRL_C, DOWN, ENTER, LoginServer, Typist
 from wildburrow import cli, plugins
@@ -21,7 +23,7 @@ from wildburrow.cli import ask
 from wildburrow.cli import client as client_cli
 from wildburrow.cli import server as server_cli
 from wildburrow.client import discovery
-from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
+from wildburrow.client.config import ClientConfig, config_path, read_config, read_toml, write_config, write_toml
 from wildburrow.client.ssh import KEEPALIVE, ssh_command
 from wildburrow.config import PREFIX
 from wildburrow.tokens import digest
@@ -141,6 +143,7 @@ def test_connect_needs_a_server(capsys: pytest.CaptureFixture[str], execs: list[
 @pytest.mark.parametrize(
     ("args", "error"),
     [
+        (["connect"], "Error: Missing argument 'PORT'."),
         (["3000"], "Error: Missing argument 'NAME...'."),
         (["0", "a"], "Error: Invalid value for 'PORT': 0 is not in the range 1<=x<=65535."),
         (["3000", "a", "--transport", "pigeon"], "Error: Invalid value for '--transport': 'pigeon' is not one of"),
@@ -180,7 +183,11 @@ def block_import(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
 
 @pytest.mark.parametrize(
     ("args", "module"),
-    [(["serve"], "wildburrow.config"), (["service", "install"], "wildburrow.config"), (["hash-password"], "argon2")],
+    [
+        (["serve"], "wildburrow.config"),
+        (["service", "install"], "wildburrow.config"),
+        (["passwords", "hash"], "argon2"),
+    ],
 )
 def test_server_commands_need_the_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], args: list[str], module: str
@@ -193,7 +200,7 @@ def test_server_commands_need_the_extra(
 def test_hash_password(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     prompts: list[str] = []
     monkeypatch.setattr(server_cli.getpass, "getpass", lambda prompt: prompts.append(prompt) or "pw")
-    assert cli.main(["hash-password"]) == 0
+    assert cli.main(["passwords", "hash"]) == 0
     assert PasswordHasher().verify(capsys.readouterr().out.strip(), "pw")
     assert prompts == ["password: ", "again: "]
 
@@ -201,7 +208,7 @@ def test_hash_password(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
 def test_hash_password_mismatch(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     answers = iter(["one", "two"])
     monkeypatch.setattr(server_cli.getpass, "getpass", lambda prompt: next(answers))
-    assert cli.main(["hash-password"]) == 1
+    assert cli.main(["passwords", "hash"]) == 1
     assert capsys.readouterr().err == "passwords do not match\n"
 
 
@@ -437,11 +444,11 @@ def test_websocket_transport_runs_the_websocket_client(monkeypatch: pytest.Monke
     cli.main(["login", "s", "--transport", "websocket", "--auth", "token", "--token", "saved"])
     assert cli.main(["3000", "a", "b", "--url", "http://override"]) == 7
     expected = ClientConfig("s", transport="websocket", auth="token", token="from-env", url="http://override")
-    assert calls == [(expected, 3000, ["a", "b"], "localhost", ask.password, None)]
+    assert calls == [(expected, 3000, ["a", "b"], "localhost", ask.password, None, None)]
 
 
 def test_token_command_mints_a_hashed_token(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["token", "ci", "--hash"]) == 0
+    assert cli.main(["tokens", "new", "ci", "--hash"]) == 0
     token_line, server_line = capsys.readouterr().out.splitlines()
     token = token_line.removeprefix("token (give this to the client): ")
     assert server_line == f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): ci:{digest(token)}"
@@ -508,7 +515,7 @@ def test_login_over_websocket_with_a_token(typed: Typist) -> None:
     assert cli.main(["login"]) == 0
     assert typed.showed(
         "? Connect over websocket: wss:// on port 443, which gets through most proxies and firewalls",
-        "? Log in with token: one made with `wildburrow token NAME` on the server",
+        "? Log in with token: one made with `wildburrow tokens new NAME` on the server",
         "? Token ******",
     )
     assert read_config(config_path()) == ClientConfig(
@@ -641,7 +648,7 @@ def test_login_without_a_token_says_where_one_goes(
 ) -> None:
     login_server.published = discovery.Published({"websocket": ("token",)}, "websocket", "token", None)
     assert cli.main(["login", "s"]) == 0
-    assert capsys.readouterr().err == f"no token saved: pass --token, or set {PREFIX}TOKEN when connecting\n"
+    assert capsys.readouterr().err == f"no token saved: pass --token, or set {client_cli.TOKEN_ENV} when connecting\n"
 
 
 def test_login_offers_only_what_the_server_publishes(
@@ -656,7 +663,7 @@ def test_login_offers_only_what_the_server_publishes(
     assert capsys.readouterr().out.startswith("Connect over: websocket, the only one the server offers\n")
     assert typed.showed(
         "? Server tunnel.example.com",
-        "? Log in with token: one made with `wildburrow token NAME` on the server",
+        "? Log in with token: one made with `wildburrow tokens new NAME` on the server",
         "? Token ******",
     )
     assert not typed.showed("? Connect over")
@@ -752,7 +759,15 @@ def test_logout_forgets_the_server(capsys: pytest.CaptureFixture[str], no_termin
     write_config(config_path(), ClientConfig("s.example.com"))
     assert cli.main(["logout"]) == 0
     assert not config_path().exists()
-    assert capsys.readouterr().out == f"removed {config_path()}\n"
+    assert capsys.readouterr().out == "forgot s.example.com\n"
+
+
+def test_logout_keeps_the_other_settings_saved(no_terminal: None) -> None:
+    write_toml(config_path(), {"local_host": "127.0.0.2"})
+    write_config(config_path(), ClientConfig("s.example.com"))
+    assert cli.main(["logout"]) == 0
+    assert read_toml(config_path()) == {"local_host": "127.0.0.2"}
+    assert read_config(config_path()) is None
 
 
 @pytest.mark.parametrize(("answer", "code", "kept"), [("y", 0, False), ("n", 1, True), (ENTER, 0, False)])
@@ -777,9 +792,9 @@ def test_logout_without_a_login(capsys: pytest.CaptureFixture[str]) -> None:
 
 HELP = Path(__file__).parent / "help"
 PAGES = [
-    [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["link"], ["links"], ["serve"],
-    ["hash-password"],
-    ["token"], ["tokens"],
+    [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["links"], ["links", "add"],
+    ["links", "end"], ["config"], ["config", "set"], ["config", "unset"],
+    ["serve"], ["passwords"], ["passwords", "hash"], ["tokens"], ["tokens", "new"], ["tokens", "deny"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip
 
@@ -846,5 +861,33 @@ def test_interrupting_a_prompt_aborts(
         raise interrupt
 
     monkeypatch.setattr(server_cli.getpass, "getpass", getpass)
-    assert cli.main(["hash-password"]) == 1
+    assert cli.main(["passwords", "hash"]) == 1
     assert capsys.readouterr().err == "aborted\n"
+
+
+def _bound(command: click.Command) -> list[click.Command]:
+    found = [command] if hasattr(command, "isik_binding") else []
+    for sub in getattr(command, "commands", {}).values():
+        found += _bound(sub)
+    return found
+
+
+@pytest.mark.parametrize("command", _bound(cli.cli), ids=lambda command: command.name)
+def test_every_setting_can_be_given_or_says_why_not(command: click.Command) -> None:
+    assert_reachable(command)
+
+
+def test_the_client_commands_declare_their_settings() -> None:
+    assert {command.name for command in _bound(cli.cli)} == {
+        "connect", "login", "logout", "names", "tunnels", "kick", "links", "add", "end", "new", "deny",
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(("args", "missing"), [(["connect"], "PORT"), (["3000"], "NAME...")])
+def test_a_missing_argument_shows_the_usage(args: list[str], missing: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(args) == 2
+    assert capsys.readouterr().err == (
+        "Usage: wildburrow connect [OPTIONS] PORT NAME...\n"
+        "Try 'wildburrow connect --help' for help.\n\n"
+        f"Error: Missing argument '{missing}'.\n"
+    )

@@ -4,12 +4,18 @@ import re
 from dataclasses import dataclass
 from http import HTTPStatus
 
+from wildburrow.core.types import Peer
+
 HEAD_END = b"\r\n\r\n"
 TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+# A request no one has said the sender of yet.
+NOWHERE = Peer("", 0)
 VERSION = re.compile(r"HTTP/1\.[01]")
 WHITESPACE = " \t"
 TEXT = "text/plain; charset=utf-8"
 JSON = "application/json"
+# Asks search engines not to index a page or follow its links.
+NOINDEX = ("X-Robots-Tag", "noindex, nofollow")
 
 
 class BadRequest(Exception):
@@ -23,6 +29,8 @@ class Request:
     method: str = "GET"
     line: str = ""
     headers: tuple[tuple[str, str], ...] = ()
+    # Who sent it, which the edge fills in once it's parsed.
+    peer: Peer = NOWHERE
 
     def path(self) -> str:
         return self.target.partition("?")[0]
@@ -84,5 +92,5 @@ def response(
     pairs = headers.items() if isinstance(headers, dict) else headers or []
     lines = [f"HTTP/1.1 {status.value} {status.phrase}"]
     lines += [f"{key}: {value}" for key, value in pairs]
-    lines += [f"Content-Length: {len(body)}", f"Content-Type: {content_type}", "Connection: close"]
+    lines += [f"Content-Length: {len(body)}", f"Content-Type: {content_type}", "Connection: close", ": ".join(NOINDEX)]
     return ("\r\n".join(lines) + "\r\n\r\n").encode() + body

@@ -11,7 +11,7 @@ Each page covers one part: what it does, how to use it, and what to know.
 - [tokens.md](tokens.md) - signed tokens to let people in without an SSH key on the server: minting, scoping by name,
   expiry, and ending them early
 - [locks.md](locks.md) - locking a tunnel behind passwords and one-time links, one login across every host of it,
-  `wildburrow link` and `links`, your own login pages, and how it holds up
+  `wildburrow links`, `links add` and `links end`, your own login pages, and how it holds up
 - [sessions.md](sessions.md) - who is connected, `wildburrow tunnels` and `kick`, tunnels ending with their token, and
   who may see and end whose sessions
 
@@ -19,6 +19,7 @@ Each page covers one part: what it does, how to use it, and what to know.
 
 - [server.md](server.md) - `service install` on systemd and launchd, HTTPS through DNS-01, running in the foreground,
   Docker and Traefik, and what the server tells clients about logging in
+- [database.md](database.md) - what the server records about itself, in memory or on file, how much, and for how long
 - [settings.md](settings.md) - every setting, as an option, an environment variable, a `_FILE` variable or an
   `--env-file` line
 

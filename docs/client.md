@@ -37,17 +37,42 @@ wildburrow logout                                       # forget the saved serve
 ```sh
 wildburrow 3000 myapp '*.myapp'               # both names, to local port 3000
 wildburrow 3000 myapp --server other.example.com
-WILDBURROW_TOKEN=wb1... wildburrow 3000 app    # logs in with this token over websocket, whatever is saved
+WILDBURROW_CLIENT_TOKEN=wb1... wildburrow 3000 app    # logs in with this token over websocket, whatever is saved
 ```
 
 `wildburrow PORT NAME...` is short for `wildburrow connect PORT NAME...`. Every `login` option works here too, for
-this run only. `--local-host` is where the local port listens (default `localhost`).
+this run only. `--local-host` is where the local port listens (default `localhost`). 
+
+Every client option can be set by a variable instead: `WILDBURROW_CLIENT_` and its name, as in
+`WILDBURROW_CLIENT_LOCAL_HOST`, `WILDBURROW_CLIENT_SERVER` or `WILDBURROW_CLIENT_TOKEN`. An option wins over its
+variable. The server's own variables are the `WILDBURROW_*` ones without `CLIENT_`, so one shell can hold both. A
+choice made for one run, like whose sessions `kick` ends or a token's names, has no variable. `wildburrow connect`
+alone, in a terminal, asks for the port and names, then whether to lock it.
 
 Requests reach your app unchanged, so websockets, server-sent events and streaming responses work as they do locally.
+Every response carries `X-Robots-Tag: noindex, nofollow`, keeping search engines away, unless the server lets the
+tunnel be indexed: by default only when you pass `--index` (`WILDBURROW_CLIENT_INDEX`), and never when the server's
+`WILDBURROW_INDEX` is `never`. `--no-index` keeps it out on a server that indexes by default. An ssh tunnel takes the
+server's default.
 With HTTPS, visitors use `wss://` and your app sees plain `ws://`.
 
-`--lock alice:pw` or `--link` locks the tunnel: visitors log in on a page the server serves, with a password or a
+`--lock alice:pw`, `--lock-guest`, `--link` or `--links 3` locks the tunnel: visitors log in on a page the server serves, with a password or a
 one-time link, before anything reaches your app. See [locks.md](locks.md).
+
+## Saving settings
+
+Any client setting a variable can give can also be saved in `~/.config/wildburrow/config.toml`, below its option and
+variable: an option wins over its variable, a variable over an answer you type, an answer over what's saved, and what's
+saved over the built-in default. A question starts from what's saved.
+
+```sh
+wildburrow config                          # every setting, its value, and where it comes from
+wildburrow config set local-host 127.0.0.2
+wildburrow config set lock-expires 12h     # every locked tunnel's logins last 12 hours
+wildburrow config unset local-host
+```
+
+`login` saves the connection settings there too, and `logout` forgets only those.
 
 ## Transports
 
@@ -57,7 +82,7 @@ one-time link, before anything reaches your app. See [locks.md](locks.md).
 | `websocket` | `wss://tunnel.example.com` on 443 | `key` (signed with `ssh-keygen -Y sign`), `password`, `token` |
 
 `websocket` gets through networks that only let HTTPS out. Tokens, locks, `wildburrow names`, `tunnels`, `kick`,
-`link` and `links` only work over it.
+and `links` only work over it.
 
 ## Staying up
 

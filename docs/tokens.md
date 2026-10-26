@@ -20,8 +20,9 @@ file. Any of them can mint.
 ## Minting
 
 ```sh
-wildburrow token alice --names 'alice,*.alice'          # good for 7 days
-wildburrow token ci --names any --expires never --yes   # any free name, no expiry
+wildburrow tokens new alice --names 'alice,*.alice'          # good for 7 days
+wildburrow tokens new ci --names any --expires never --yes   # any free name, no expiry
+wildburrow tokens                                            # what this machine has minted
 ```
 
 ```
@@ -66,18 +67,21 @@ moves it), without the token itself. The server can't list tokens: it never stor
 
 ## Ending a token early
 
-A token's tunnels end when it expires (see [sessions.md](sessions.md#tokens-end-their-tunnels)), and
-`wildburrow kick --who alice` ends the ones open now. But with nothing kept on the server, the token itself can't be
-revoked on its own. Instead:
+A token's tunnels end when it expires (see [sessions.md](sessions.md#tokens-end-their-tunnels)). To stop one sooner:
 
+```sh
+wildburrow tokens deny 3f9a0c4e1b2d7a65      # by the id `tokens` lists; ends its sessions now
+```
+
+- An admin of the server can deny any token. The server refuses it from then on, and keeps refusing it after a restart
+  when it keeps its record on file ([database.md](database.md)); in memory, a restart forgets it.
+- Or list its id in `WILDBURROW_AUTH_TOKEN_DENY` (comma-separated) and restart the server.
 - Keep expiries short and mint again when needed.
-- List its id in `WILDBURROW_AUTH_TOKEN_DENY` (comma-separated) and restart the server. A token that would have expired
-  anyway can come off the list then; one that never expires stays.
 - Replace the signing key in `WILDBURROW_AUTH_TOKEN_SIGNERS` to end every token it signed, then mint again for whoever
   should keep access.
 
 ## Random tokens
 
-`wildburrow token NAME --hash` makes the older kind: a random token, and a line of its hash for
+`wildburrow tokens new NAME --hash` makes the older kind: a random token, and a line of its hash for
 `WILDBURROW_AUTH_TOKEN_HASHES`. These need the server's settings changed for each one, but end the moment their line
 is removed. Both kinds work side by side.

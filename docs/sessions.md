@@ -23,11 +23,16 @@ only to admins and on your own sessions.
 
 ```sh
 wildburrow kick a1b2c3d4e5f6      # one session, by its id
-wildburrow kick --name alice      # whichever session holds the name
-wildburrow kick --who alice       # every session of that identity
+wildburrow kick alice bob         # by identity, or by a name held
+wildburrow kick --name alice      # only whichever session holds the name
+wildburrow kick --who alice       # only the sessions of that identity
 ```
 
-It doesn't ask first. The ended client prints `closed: ended by <you>` and stops instead of reconnecting, over both
+Each target is tried as a session id, an identity and a name held. When the readings that match land on different
+sessions, as with alice the identity and a name `alice` someone else holds, `kick` ends nothing, lists each reading,
+and asks for `--who` or `--name`. Given nothing in a terminal, it lists the sessions and asks which to end.
+
+It doesn't ask first otherwise. The ended client prints `closed: ended by <you>` and stops instead of reconnecting, over both
 transports.
 
 Ending a session doesn't take the credential away. When it could come back, `kick` says so:
@@ -66,11 +71,12 @@ holds a signer key can already mint a token for any name, so making them admins 
 | Level | Who reaches whose sessions |
 |---|---|
 | `none` | No one, not even their own |
-| `own` | Everyone their own (the default) |
-| `admins` | Admins also everyone who isn't an admin |
+| `own` | Everyone their own |
+| `admins` | Admins also everyone who isn't an admin (the default) |
 | `all` | Admins everyone, admins included |
 
-Someone who isn't an admin never reaches past their own sessions. `KICK` can't reach further than `SEE`, and the server
+An admin a level keeps to their own sessions is told so, with the setting that does it, when `tunnels` or `kick`
+finds no one. Someone who isn't an admin never reaches past their own sessions. `KICK` can't reach further than `SEE`, and the server
 won't start if it does.
 
 ### What counts as your own

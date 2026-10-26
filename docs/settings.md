@@ -18,11 +18,13 @@ Every setting is an option of `serve`, `service install` and `service edit`, and
 | `WILDBURROW_DOMAIN` | required | Base domain tunnels live under |
 | `WILDBURROW_TRANSPORTS` | `ssh` | Transport plugins: `ssh`, `websocket` |
 | `WILDBURROW_AUTH` | `key` | Auth plugins, tried in order: `key`, `password`, `token` |
-| `WILDBURROW_CLIENT_TRANSPORT` | first that works | The transport `wildburrow login` starts from |
-| `WILDBURROW_CLIENT_AUTH` | its first in `AUTH` | The auth method `wildburrow login` starts from |
+| `WILDBURROW_SUGGESTED_TRANSPORT` | first that works | The transport `wildburrow login` starts from |
+| `WILDBURROW_SUGGESTED_AUTH` | its first in `AUTH` | The auth method `wildburrow login` starts from |
 | `WILDBURROW_ADMINS` | `signers` | Who is an admin, by rules like `key` or `token:NAME`; [sessions.md](sessions.md) |
-| `WILDBURROW_SEE` | `own` | Whose sessions people see: `none`, `own`, `admins`, `all`; see [sessions.md](sessions.md) |
-| `WILDBURROW_KICK` | `own` | Whose sessions people can end, no further than `SEE` |
+| `WILDBURROW_SEE` | `admins` | Whose sessions people see: `none`, `own`, `admins`, `all`; see [sessions.md](sessions.md) |
+| `WILDBURROW_KICK` | `admins` | Whose sessions people can end, no further than `SEE` |
+| `WILDBURROW_INDEX` | `opt-in` | Search engines: `never` indexes no tunnel; `opt-in` only those whose client says `--index`; `opt-out` every one whose client doesn't say `--no-index` |
+| `WILDBURROW_DATABASE` | in memory | A file to keep the server's record in; see [database.md](database.md) for the `WILDBURROW_DATABASE_*` settings |
 | `WILDBURROW_DATA_DIR` | `~/.local/state/wildburrow` | Host key, certificates, ACME account; `/data` in the image |
 | `WILDBURROW_HTTP_HOST` / `_HTTP_PORT` | `0.0.0.0` / `80` | Plain HTTP listener |
 | `WILDBURROW_HTTPS_HOST` / `_HTTPS_PORT` | `0.0.0.0` / `443` | TLS listener, when `WILDBURROW_DNS` is set |
@@ -79,11 +81,11 @@ Defaults for every [locked tunnel](locks.md), which a client can change for its 
 | Variable | Default | |
 |---|---|---|
 | `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | `~/.ssh/authorized_keys` | OpenSSH public keys, one per line |
-| `WILDBURROW_AUTH_PASSWORD_HASH` | | argon2 hash from `wildburrow hash-password` |
+| `WILDBURROW_AUTH_PASSWORD_HASH` | | argon2 hash from `wildburrow passwords hash` |
 | `WILDBURROW_AUTH_PASSWORD_MAX_FAILURES` | `5` | Failed passwords per address before blocking |
 | `WILDBURROW_AUTH_PASSWORD_BLOCK_SECONDS` | `900` | How long failures count against an address |
 | `WILDBURROW_AUTH_TOKEN_SIGNERS` | | Public keys whose signed tokens are accepted, one per line |
 | `WILDBURROW_AUTH_TOKEN_DENY` | | Ids of signed tokens to refuse before they expire, comma-separated |
-| `WILDBURROW_AUTH_TOKEN_HASHES` | | `name:sha256` lines from `wildburrow token NAME --hash` |
+| `WILDBURROW_AUTH_TOKEN_HASHES` | | `name:sha256` lines from `wildburrow tokens new NAME --hash` |
 
 The token plugin needs `SIGNERS`, `HASHES` or both. See [tokens.md](tokens.md).

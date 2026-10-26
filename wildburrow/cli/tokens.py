@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import click
+from isik.common.settings import UNSET, AskedAtUse, NoEnv, NoQuestion, ReplacedByFlow, Setting, Settings
 
 from wildburrow import durations, tokens
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
 from wildburrow.cli.output import NEVER, table, when
+from wildburrow.cli.settings import CLIENT_PREFIX, never, options
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config
 from wildburrow.config import PREFIX
@@ -17,6 +19,7 @@ from wildburrow.core.names import ANY, InvalidName, parse_patterns
 from wildburrow.durations import UNITS
 
 DEFAULT_EXPIRY = "7d"
+DURATIONS = "30m, 12h, 7d, 2w or never"
 DENY = f"{PREFIX}AUTH_TOKEN_DENY"
 SERVER_PLACEHOLDER = "SERVER"
 
@@ -68,19 +71,80 @@ def _record(grant: tokens.Grant, server: str) -> None:
         log.write(json.dumps(entry) + "\n")
 
 
-@click.command()
-@click.argument("name")
-@click.option("--names", help=f"names it may claim, comma-separated with * for any one label, or {ANY}")
-@click.option("--expires", default=DEFAULT_EXPIRY, show_default=True, help=f"like 30m, 12h, 7d or 2w, or {NEVER}")
-@click.option("--identity", help="SSH key to sign with (default: the saved login's, else the first in ~/.ssh)")
-@click.option("--server", help="server for the login line (default: the saved login's)")
-@click.option("--yes", "-y", is_flag=True, help="don't ask first")
-@click.option("--hash", "hashed", is_flag=True, help="a random token for the server's TOKEN_HASHES instead")
-def token(
-    name: str, names: str | None, expires: str, identity: str | None, server: str | None, yes: bool, hashed: bool
-) -> int:
+def ask_token() -> int:
+    """Asks who a token is for, what it may claim and for how long, and mints it."""
+    name = ask.text("Who is it for", "", ask.required)
+    names = ask.text(f"Names they may claim, comma-separated (or {ANY})", f"{name},*.{name}", ask.required)
+    expires = ask.text(f"Good for ({DURATIONS})", DEFAULT_EXPIRY, ask.required)
+    return _token(name, names, expires, None, None, False, False)
+
+
+ASKED = ReplacedByFlow(flow=ask_token, reason="tokens new given no NAME in a terminal asks for the name first")
+
+
+class Mint(
+    Settings,
+    prefix=CLIENT_PREFIX,
+    env=NoEnv(reason="a token is minted once, for one person; a variable would give every token minted the same"),
+):
+    names = Setting(
+        str, f"names it may claim, comma-separated with * for any one label, or {ANY}", default=UNSET,
+        shown="", question=ASKED,
+    )  # fmt: skip
+    expires = Setting(str, f"like 30m, 12h, 7d or 2w, or {NEVER}", default=DEFAULT_EXPIRY, question=ASKED)
+    identity = Setting(
+        str, "SSH key to sign with", default=UNSET, shown="the saved login's, else the first in ~/.ssh",
+        question=NoQuestion(reason="the saved login's key signs, nearly always the one; --identity covers the rest"),
+    )  # fmt: skip
+    server = Setting(
+        str, "server for the login line", default=UNSET, shown="the saved login's",
+        question=NoQuestion(reason="the saved login names the server, and the line printed says when there is none"),
+    )  # fmt: skip
+    yes = Setting(
+        bool, "don't ask first", option=("-y", "--yes"), default=False, negatable=False,
+        question=AskedAtUse(reason="the warning and its question come once the grant is known, just before signing"),
+    )  # fmt: skip
+    hashed = Setting(
+        bool, "a random token for the server's TOKEN_HASHES instead", option="--hash", default=False,
+        negatable=False, question=NoQuestion(reason="a hashed token is the rarer kind, for servers without signers"),
+    )  # fmt: skip
+
+
+@click.group("tokens", invoke_without_command=True)
+@click.pass_context
+def tokens_group(ctx: click.Context) -> int | None:
+    """List the tokens minted on this machine, which a server can't list; or mint one with `tokens new`."""
+    return _tokens_group(ctx)
+
+
+def _tokens_group(ctx: click.Context) -> int | None:
+    if ctx.invoked_subcommand is None:
+        return _list_tokens()
+    return None
+
+
+def _given(settings: Settings, name: str) -> str | None:
+    value = getattr(settings, name)
+    return None if value is UNSET else value
+
+
+@options(Mint, interactive=never)
+@tokens_group.command("new")
+@click.argument("name", required=False)
+def new_token(name: str | None, settings: Mint) -> int:
     """Mint a token signed with your SSH key, for a server that trusts the key in AUTH_TOKEN_SIGNERS."""
-    return _token(name, names, expires, identity, server, yes, hashed)
+    return _new_token(name, settings)
+
+
+def _new_token(name: str | None, settings: Mint) -> int:
+    if name is None:
+        if not ask.interactive():
+            raise click.MissingParameter(param_type="argument", param_hint="'NAME'")
+        return ask_token()
+    return _token(
+        name, _given(settings, "names"), settings.expires, _given(settings, "identity"), _given(settings, "server"),
+        settings.yes, settings.hashed,
+    )  # fmt: skip
 
 
 def _token(
@@ -119,12 +183,6 @@ def _token(
     if not target:
         click.echo(f"\nno saved login to name the server: replace {SERVER_PLACEHOLDER}, or pass --server", err=True)
     return 0
-
-
-@click.command("tokens")
-def list_tokens() -> int:
-    """List the tokens minted on this machine; a server can't list them."""
-    return _list_tokens()
 
 
 def _list_tokens() -> int:

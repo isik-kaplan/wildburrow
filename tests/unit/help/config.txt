@@ -1,0 +1,10 @@
+Usage: wildburrow config [OPTIONS] [COMMAND] [ARGS]...
+
+  List every client setting, its value and where it comes from; or change what's saved.
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  set    Save VALUE for the client setting NAME, below its option and variable.
+  unset  Forget the saved value of the client setting NAME.

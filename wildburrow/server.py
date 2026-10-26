@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import signal
+import socket
 from collections.abc import Mapping
 from datetime import timedelta
 from importlib.metadata import version
@@ -13,13 +15,17 @@ from wildburrow.auth.base import Authenticator
 from wildburrow.certs.acme import ACMEIssuer
 from wildburrow.certs.manager import CertManager, server_context
 from wildburrow.certs.store import CertStore
+from wildburrow.core import indexing
 from wildburrow.core.context import ServerContext
 from wildburrow.core.locks import Locking
 from wildburrow.core.names import LABEL
 from wildburrow.core.sessions import Admins, Policy, level
+from wildburrow.dns.recorded import RecordedDNS
 from wildburrow.edge import proxy
 from wildburrow.edge.http import Edge, Mode
 from wildburrow.locks import FIELDS, LOCK_PREFIX, LockSettings, ServerLockSettings, problems
+from wildburrow.store.database import DATABASE_PREFIX, Database, DatabaseError, DatabaseSettings, storage
+from wildburrow.store.record import Handler, Recorder
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +52,8 @@ class Server:
             authenticator=authenticator,
             policy=policy(settings, authenticator),
             locking=locking(env),
+            indexing=indexing.parse(f"{config.PREFIX}INDEX", settings.index),
+            record=Recorder(Database(storage(settings.database, config.load(DatabaseSettings, env, DATABASE_PREFIX)))),
         )
         self.loaded: dict[str, Any] = {name: plugins.load("transport", name, env) for name in settings.transports}
         self.transports: list[Any] = list(self.loaded.values())
@@ -70,11 +78,12 @@ class Server:
 
     def _setup_tls(self) -> CertManager:
         settings = self.settings
+        recorded = RecordedDNS(self.dns, self.ctx.record)
         issuer = ACMEIssuer(
             settings.acme_directory,
             settings.acme_email,
             settings.data_dir / "acme",
-            self.dns,
+            recorded,
             settings.acme_propagation_seconds,
             settings.acme_timeout_seconds,
         )
@@ -82,9 +91,10 @@ class Server:
             self.ctx.domain,
             CertStore(settings.data_dir / "certs"),
             issuer,
-            self.dns,
+            recorded,
             settings.dns_manage_records,
             timedelta(days=settings.renew_before_days),
+            record=self.ctx.record,
         )
         self.ctx.certs = certs
         tls = server_context()
@@ -98,6 +108,18 @@ class Server:
     async def __aenter__(self) -> Self:
         self.settings.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         async with contextlib.AsyncExitStack() as stack:
+            record = self.ctx.record
+            try:
+                denied = await record.open(
+                    version(__package__), socket.gethostname(), self.ctx.domain, recorded(self.settings)
+                )
+            except DatabaseError as exc:
+                raise config.ConfigError(f"{config.PREFIX}DATABASE: {exc}") from None
+            stack.push_async_callback(record.close)
+            self.ctx.denied = denied
+            handler = Handler(record)
+            logging.getLogger(__package__).addHandler(handler)
+            stack.callback(logging.getLogger(__package__).removeHandler, handler)
             if self.dns is not None:
                 stack.push_async_callback(self.dns.aclose)
                 certs = self._setup_tls()
@@ -125,6 +147,15 @@ class Server:
         """How to log in, for `wildburrow login`: what each transport takes, and where a client should start."""
         transports = {name: {"auth": self.offered[name], **loaded.published()} for name, loaded in self.loaded.items()}
         return {"version": version(__package__), "transports": transports, "defaults": self.defaults}
+
+
+def recorded(settings: config.ServerSettings) -> dict[str, Any]:
+    """The settings a run is recorded with, secrets only as set."""
+    found = {}
+    for field in dataclasses.fields(settings):
+        value = getattr(settings, field.name)
+        found[field.name] = ("(set)" if value else "") if field.metadata.get(config.SECRET) else value
+    return json.loads(json.dumps(found, default=str))
 
 
 def policy(settings: config.ServerSettings, authenticator: Authenticator) -> Policy:
@@ -155,17 +186,17 @@ def client_defaults(settings: config.ServerSettings, offered: Mapping[str, list[
     usable = [name for name, methods in offered.items() if methods]
     if not usable:
         raise config.ConfigError(f"no {config.PREFIX}AUTH plugin works over any of {config.PREFIX}TRANSPORTS")
-    transport = settings.client_transport or usable[0]
+    transport = settings.suggested_transport or usable[0]
     if transport not in usable:
         raise config.ConfigError(
-            f"{config.PREFIX}CLIENT_TRANSPORT: {transport!r} isn't one of the transports clients can log in over: "
+            f"{config.PREFIX}SUGGESTED_TRANSPORT: {transport!r} isn't one of the transports clients can log in over: "
             + ", ".join(usable)
         )
     methods = offered[transport]
-    auth = settings.client_auth or methods[0]
+    auth = settings.suggested_auth or methods[0]
     if auth not in methods:
         raise config.ConfigError(
-            f"{config.PREFIX}CLIENT_AUTH: {auth!r} doesn't work over {transport}, which takes: " + ", ".join(methods)
+            f"{config.PREFIX}SUGGESTED_AUTH: {auth!r} doesn't work over {transport}, which takes: " + ", ".join(methods)
         )
     return {"transport": transport, "auth": auth}
 

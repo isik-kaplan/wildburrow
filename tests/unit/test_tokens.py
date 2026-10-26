@@ -56,12 +56,17 @@ def encoded(**changes: Any) -> str:
         (encoded(issued=1.5), "expected int, got 1.5"),
         (encoded(id=""), "expected str, got ''"),
         (encoded(id=None), "expected str, got None"),
-        (tokens.encode(b"[" * 100_000, b"s"), "Expecting value"),
     ],
 )
 def test_anything_but_a_grant_is_refused(token: str, message: str) -> None:
     with pytest.raises(ValueError, match=f"^{re.escape(message)}"):
         tokens.decode(token)
+
+
+def test_a_grant_nested_too_deep_is_refused() -> None:
+    # Whether the parser runs out of input or of stack first depends on how deep the stack already is.
+    with pytest.raises(ValueError, match=r"^(Expecting value|not a grant)"):
+        tokens.decode(tokens.encode(b"[" * 100_000, b"s"))
 
 
 def test_every_field_is_needed() -> None:

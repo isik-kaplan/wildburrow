@@ -1,0 +1,6 @@
+Usage: wildburrow config set [OPTIONS] NAME VALUE
+
+  Save VALUE for the client setting NAME, below its option and variable.
+
+Options:
+  -h, --help  Show this message and exit.

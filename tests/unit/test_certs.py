@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import logging
 import re
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from tests.unit.test_registry import FakeTunnel
 from wildburrow.auth.base import Authenticator
 from wildburrow.certs import acme as acme_module
 from wildburrow.certs.acme import ACMEIssuer, IssueError, make_csr
@@ -360,7 +362,7 @@ async def test_a_failed_certificate_is_logged_and_releases_the_name(
 ) -> None:
     ctx = ServerContext(DOMAIN, 5, tmp_path, Authenticator([]))
     ctx.certs = manager(tmp_path, FakeIssuer(fail=1))
-    tunnel = SimpleNamespace(identity=Identity("a", "key", "a"))
+    tunnel = FakeTunnel(Identity("a", "key", "a"))
     with pytest.raises(
         CertificateFailed, match=rf"^could not get a certificate for \*\.{re.escape(DOMAIN)}: issuance failed$"
     ):
@@ -387,6 +389,57 @@ async def test_issuing_and_failing_are_logged(tmp_path: Path, caplog: pytest.Log
         (logging.INFO, f"requesting a certificate for *.{DOMAIN}, {DOMAIN}"),
         (logging.ERROR, f"renewing *.{DOMAIN} failed; will retry"),
     ]
+
+
+class Certificates:
+    """What a manager writes in the server's record, with ids as a record keeping history hands out."""
+
+    def __init__(self, history: bool = True) -> None:
+        self.history = history
+        self.seen: list[tuple[object, ...]] = []
+
+    def certificate_requested(self, parent: str) -> int | None:
+        self.seen.append(("requested", parent))
+        return len(self.seen) if self.history else None
+
+    def certificate_finished(self, certificate: int, error: str | None) -> None:
+        self.seen.append(("finished", certificate, error))
+
+
+@pytest.mark.parametrize(("failure", "error"), [(RuntimeError("rate limited"), "rate limited"), (OSError(), "OSError")])
+async def test_every_certificate_asked_for_is_recorded_with_how_it_went(
+    tmp_path: Path, failure: Exception, error: str
+) -> None:
+    record = Certificates()
+    certs = CertManager(
+        DOMAIN, CertStore(tmp_path / "certs"), FakeIssuer(), FakeDNS(), False, timedelta(days=30), Clock(), record
+    )  # type: ignore[arg-type]
+    await certs.ensure(f"app.{DOMAIN}")
+    certs._issuer.issue = lambda domains: _raise(failure)  # type: ignore[method-assign]
+    with pytest.raises(type(failure)):
+        await certs.ensure(f"x.app.{DOMAIN}")
+    assert record.seen == [
+        ("requested", f"app.{DOMAIN}"),
+        ("finished", 1, None),
+        ("requested", f"x.app.{DOMAIN}"),
+        ("finished", 3, error),
+    ]
+
+
+async def _raise(failure: Exception) -> tuple[bytes, bytes]:
+    raise failure
+
+
+@pytest.mark.parametrize("fail", [0, 1])
+async def test_a_record_without_history_is_told_nothing_more(tmp_path: Path, fail: int) -> None:
+    record = Certificates(history=False)
+    certs = CertManager(
+        DOMAIN, CertStore(tmp_path / "certs"), FakeIssuer(fail=fail), FakeDNS(), False, timedelta(days=30), Clock(),
+        record,  # type: ignore[arg-type]
+    )  # fmt: skip
+    with pytest.raises(RuntimeError) if fail else contextlib.nullcontext():
+        await certs.ensure(f"app.{DOMAIN}")
+    assert record.seen == [("requested", f"app.{DOMAIN}")]
 
 
 async def test_maintain_says_when_it_retries(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

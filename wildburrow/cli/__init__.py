@@ -5,7 +5,7 @@ from typing import Any
 
 import click
 
-from wildburrow.cli import ask, client, menu, server, service, tokens
+from wildburrow.cli import ask, client, menu, saved, server, service, tokens
 from wildburrow.service import ServiceError
 
 PROG = "wildburrow"
@@ -49,9 +49,8 @@ def _alone(ctx: click.Context) -> int:
     return menu.run()
 
 
-for command in (client.connect, client.login, client.logout, client.names, client.tunnels, client.kick, client.link,
-                client.links, server.serve, service.service, server.hash_password, tokens.token,
-                tokens.list_tokens):  # fmt: skip
+for command in (client.connect, client.login, client.logout, client.names, client.tunnels, client.kick, client.links,
+                tokens.tokens_group, saved.config, server.serve, service.service, server.passwords):  # fmt: skip
     cli.add_command(command)
 
 

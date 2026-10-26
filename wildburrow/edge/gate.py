@@ -12,13 +12,16 @@ from urllib.parse import parse_qs, urlencode
 
 from wildburrow import locks, protocol
 from wildburrow.core.context import ServerContext
-from wildburrow.core.locks import LINK_PATH, Entry, Lock, challenge
+from wildburrow.core.locks import LINK_PATH, Entry, Lock, challenge, digest
 from wildburrow.core.names import host_labels
 from wildburrow.edge.messages import Request, response
 
 FORM_BYTES = 8192
 FORM_FIELDS = 8
 # How many times a host sends a visitor to the home and back before saying their browser keeps no cookies.
+# Why a login failed, as recorded.
+LIMITED = "limited"
+WRONG_PASSWORD = "wrong-password"  # noqa: S105
 MAX_TRIES = 3
 CHALLENGE_LENGTH = len(challenge(""))
 VOUCH = "/vouch"
@@ -52,9 +55,10 @@ type Body = Callable[[int], Awaitable[bytes]]
 
 @dataclass(frozen=True, slots=True)
 class Admitted:
-    """A request let through, with the head to forward in place of the one the visitor sent."""
+    """A request let through, with the head to forward in place of the one the visitor sent, and who it's from."""
 
     head: bytes
+    entry: Entry
 
 
 def _page(lock: Lock, which: str, status: HTTPStatus, cookies: list[str], **values: str) -> bytes:
@@ -181,6 +185,7 @@ def _onward(
         return _arrived(lock, _back(fields), cookies)
     host, to, asked = handoff
     code = lock.issue(host, asked, entry, until, to)
+    ctx.record.handoff(lock, entry, digest(code), host)
     claim = f"{lock.scheme}://{host}{lock.settings.path}{CLAIM}?{urlencode({'code': code, 'to': to})}"
     return _redirect(claim, cookies)
 
@@ -204,8 +209,11 @@ def _link(ctx: ServerContext, lock: Lock, request: Request, key: str) -> bytes:
         return _message(lock, HTTPStatus.GONE, SPENT)
     if request.method == POST or (request.method == "GET" and not lock.settings.confirm_links):
         lock.spend(entry)
+        ctx.record.link_opened(lock, entry, request.peer, request, used=True)
+        ctx.record.login_attempt(lock, "link", entry.label, entry, request.peer, request, None)
         return _landing(ctx, lock, entry, [_home_cookie(lock, entry, lock.until())])
     if request.method in SAFE:
+        ctx.record.link_opened(lock, entry, request.peer, request, used=False)
         title = entry.host or lock.home
         return _page(lock, "link_page", HTTPStatus.OK, [], title=escape(title), action=escape(request.path()))
     return response(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -221,10 +229,14 @@ async def _home(ctx: ServerContext, lock: Lock, request: Request, rest: str, bod
         fields = await _form(request, body)
         if isinstance(fields, bytes):
             return fields
+        username = fields.get(CREDENTIALS[0], "")
         if lock.limited():
+            ctx.record.login_attempt(lock, "form", username, None, request.peer, request, LIMITED)
             return _login(lock, HTTPStatus.TOO_MANY_REQUESTS, fields, _going(ctx, lock, fields), SLOW)
         if (entry := lock.login(*(fields.get(key, "") for key in CREDENTIALS))) is None:
+            ctx.record.login_attempt(lock, "form", username, None, request.peer, request, WRONG_PASSWORD)
             return _login(lock, HTTPStatus.UNAUTHORIZED, fields, _going(ctx, lock, fields), WRONG)
+        ctx.record.login_attempt(lock, "form", username, entry, request.peer, request, None)
         lock.logged_in(entry)
         until = lock.until()
         return _onward(ctx, lock, entry, until, fields, [_home_cookie(lock, entry, until)])
@@ -245,7 +257,7 @@ def _pending(lock: Lock, request: Request) -> tuple[int, str]:
     return int(tries) if tries.isdigit() else 0, verifier
 
 
-def _claim(lock: Lock, request: Request) -> bytes:
+def _claim(ctx: ServerContext, lock: Lock, request: Request) -> bytes:
     """A host taking the code the home sent the visitor back with, from the browser it was made for."""
     if request.method not in SAFE:
         return response(HTTPStatus.METHOD_NOT_ALLOWED)
@@ -257,6 +269,7 @@ def _claim(lock: Lock, request: Request) -> bytes:
         # Back to the page, which sends the visitor round again, counting the tries.
         return _redirect(_back(fields), [])
     found, entry = redeemed
+    ctx.record.redeemed(digest(str(code)))
     lock.seen(entry)
     kept = _login_cookie(lock, lock.cookie_name(), request.host, entry, found.until)
     return _redirect(found.to, [kept, _cookie(lock, lock.pending_name(), "", 0)])
@@ -290,7 +303,7 @@ def _admit(lock: Lock, request: Request, entry: Entry) -> Admitted:
             value = "; ".join(kept)
         headers.append((key, value))
     headers.append((lock.settings.user_header, entry.label))
-    return Admitted(request.head(headers))
+    return Admitted(request.head(headers), entry)
 
 
 async def guard(ctx: ServerContext, lock: Lock, request: Request, body: Body) -> bytes | Admitted:
@@ -300,13 +313,16 @@ async def guard(ctx: ServerContext, lock: Lock, request: Request, body: Body) ->
         rest = path.removeprefix(base)
         if request.host == lock.home:
             return await _home(ctx, lock, request, rest, body)
-        return _claim(lock, request) if rest == CLAIM else response(HTTPStatus.NOT_FOUND)
+        return _claim(ctx, lock, request) if rest == CLAIM else response(HTTPStatus.NOT_FOUND)
     if (given := request.header(lock.settings.header.lower())) is not None:
-        if lock.limited():
-            return _plain(HTTPStatus.TOO_MANY_REQUESTS, SLOW)
         username, _, password = given.partition(":")
+        if lock.limited():
+            ctx.record.login_attempt(lock, "header", username, None, request.peer, request, LIMITED)
+            return _plain(HTTPStatus.TOO_MANY_REQUESTS, SLOW)
         if (entry := lock.login(username, password)) is None:
+            ctx.record.login_attempt(lock, "header", username, None, request.peer, request, WRONG_PASSWORD)
             return _plain(HTTPStatus.UNAUTHORIZED, f"{lock.settings.header}: {WRONG}")
+        ctx.record.login_attempt(lock, "header", username, entry, request.peer, request, None)
         return _admit(lock, request, entry)
     if (found := lock.admitted(request.host, request.cookies().get(lock.cookie_name()))) is not None:
         return _admit(lock, request, found[0])

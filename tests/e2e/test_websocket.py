@@ -38,7 +38,7 @@ pytestmark = pytest.mark.e2e
 TOKEN = new_token()
 METHODS = ["key", "password", "token"]
 SERVER_AUTH = ["key", "password", "token", "key,password,token"]
-FEATURES = ["sessions", "lock"]
+FEATURES = list(protocol.SINCE)
 
 
 @pytest.fixture
@@ -408,7 +408,7 @@ async def test_cli_subprocess(
     start_server: StartServer, credentials: Credentials, backend: Backend, ws_env, tmp_path: Path
 ) -> None:
     running = await start_server(**ws_env, WILDBURROW_DOMAIN="localhost")
-    env = os.environ | {"XDG_CONFIG_HOME": str(tmp_path), "WILDBURROW_TOKEN": TOKEN}
+    env = os.environ | {"XDG_CONFIG_HOME": str(tmp_path), "WILDBURROW_CLIENT_TOKEN": TOKEN}
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "wildburrow", str(backend.port), "cli",
         "--server", "localhost", "--transport", "websocket", "--auth", "token",
@@ -653,7 +653,18 @@ async def test_the_login_line_a_minted_token_prints_logs_in(
         WILDBURROW_AUTH="key,token",
         WILDBURROW_AUTH_TOKEN_SIGNERS=credentials.public_key,
     )
-    minting = ["token", "alice", "--names", "alice", "-y", "--server", DOMAIN, "--identity", str(credentials.key)]
+    minting = [
+        "tokens",
+        "new",
+        "alice",
+        "--names",
+        "alice",
+        "-y",
+        "--server",
+        DOMAIN,
+        "--identity",
+        str(credentials.key),
+    ]
     assert await asyncio.to_thread(cli.main, minting) == 0
     [line] = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  wildburrow login ")]
     login = [*shlex.split(line)[1:], "--url", f"http://127.0.0.1:{running.http_port}"]
@@ -732,3 +743,23 @@ async def test_names_lists_what_is_bound_and_whose(
         {"name": "*.mine", "yours": False},
     ]
     await stop(holder)
+
+
+@pytest.mark.parametrize(
+    ("rule", "asked", "tagged", "said"),
+    [
+        ("opt-in", None, True, False), ("opt-in", True, False, False), ("opt-out", None, False, False),
+        ("opt-out", False, True, False), ("never", True, True, True),
+    ],
+)  # fmt: skip
+async def test_search_engines_are_kept_away_as_the_server_and_client_say(
+    start_server: StartServer, credentials: Credentials, backend: Backend, ws_env,
+    rule: str, asked: bool | None, tagged: bool, said: bool,
+) -> None:  # fmt: skip
+    running = await start_server(**ws_env, WILDBURROW_INDEX=rule)
+    task, out = start_client(running, client_config(credentials, "key"), backend.port, ["app"], index=asked)
+    await out.wait_for("ready:")
+    reply = await http(running.http_port, f"GET / HTTP/1.1\r\nHost: app.{DOMAIN}\r\n\r\n".encode())
+    assert (b"\r\nX-Robots-Tag: noindex, nofollow\r\n" in reply) is tagged
+    assert ("this server keeps every tunnel out of search engines, so it stays unindexed" in out.lines) is said
+    await stop(task)

@@ -2,25 +2,21 @@
 
 from collections.abc import Callable
 
-from wildburrow.cli import ask, client, locking, service, tokens
-from wildburrow.core.names import ANY
+import click
+
+from wildburrow.cli import ask, client, service, tokens
 from wildburrow.service import ServiceError
 from wildburrow.service import manager as find_manager
 
-DURATIONS = "30m, 12h, 7d, 2w or never"
+
+def _alone(command: click.Command, *args: str) -> int:
+    """Runs `command` given nothing, so it asks for what it needs."""
+    with command.make_context(command.name, list(args), parent=click.get_current_context()) as ctx:
+        return command.invoke(ctx)
 
 
 def _tunnel() -> int:
-    port = int(ask.text("Local port", "", ask.port))
-    names = ask.text("Names, separated by spaces (* for any one label, as in *.myapp)", "", ask.required)
-    options: dict[str, tuple[str, ...]] = {}
-    if ask.confirm("Lock it, so only people you let in see it?", default=False):
-        users = ask.text("Usernames to give a password, separated by spaces (empty for none)")
-        links = ask.text("One-time links: how many, or labels separated by commas (empty for none)")
-        link = (links,) if links.strip() else ()
-        # Asking for a lock and naming no one makes up a username and password.
-        options = {"lock": tuple(users.split()) or (() if link else (locking.BARE,)), "link": link}
-    return client._connect(port, tuple(names.split()), None, "localhost", options)
+    return _alone(client.connect)
 
 
 def _login() -> int:
@@ -28,18 +24,11 @@ def _login() -> int:
 
 
 def _token() -> int:
-    name = ask.text("Who is it for", "", ask.required)
-    names = ask.text(f"Names they may claim, comma-separated (or {ANY})", f"{name},*.{name}", ask.required)
-    expires = ask.text(f"Good for ({DURATIONS})", tokens.DEFAULT_EXPIRY, ask.required)
-    return tokens._token(name, names, expires, None, None, False, False)
+    return _alone(tokens.new_token)
 
 
 def _sessions() -> int:
-    found = client.listed(None)
-    if not found or not ask.confirm("End one of them?", default=False):
-        return 0
-    choices = {entry["id"]: f"{entry['id']}: {client.who(entry)}" for entry in found}
-    return client.end(None, {"session": ask.choose("Which?", choices, found[0]["id"])})
+    return _alone(client.kick)
 
 
 def _install() -> int:

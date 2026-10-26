@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 from hypothesis import given
@@ -21,6 +21,8 @@ class FakeTunnel:
     identity: Identity
     session: Session | None = None
     lock: Lock | None = None
+    index: bool | None = None
+    records: list[int] = field(default_factory=list)
 
     async def open_stream(self, peer):
         raise NotImplementedError

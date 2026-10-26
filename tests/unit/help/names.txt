@@ -3,5 +3,16 @@ Usage: wildburrow names [OPTIONS]
   List the names bound on the server right now, and which are yours. Logs in as a tunnel would.
 
 Options:
-  --server TEXT  server to ask instead of the saved one
-  -h, --help     Show this message and exit.
+  --server TEXT                 server to use instead of the saved one
+  --token TEXT                  token to log in with; means --auth token
+  --ssh-port INTEGER            SSH port (1-65535) (default: 2222)
+  --user TEXT                   SSH user (default: your local user)
+  --transport [ssh|websocket]   how to reach the server (default: ssh)
+  --auth [key|password|token]   how to log in (default: key)
+  --identity TEXT               SSH key for websocket
+  --url TEXT                    websocket base URL override
+  --reconnect / --no-reconnect  reconnect when the connection drops (default: on)
+  --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
+                                (default: 1)
+  --retry-max SECONDS           longest wait between reconnects (default: 30)
+  -h, --help                    Show this message and exit.

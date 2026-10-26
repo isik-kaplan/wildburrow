@@ -50,6 +50,7 @@ SHARDS = {
     ),
     "certs": ("wildburrow.certs.", "wildburrow.dns."),
     "auth": ("wildburrow.auth.", "wildburrow.tokens."),
+    "store": ("wildburrow.store.",),
 }  # fmt: skip
 EVERY_MUTANT = ("",)
 NO_TESTS = 33

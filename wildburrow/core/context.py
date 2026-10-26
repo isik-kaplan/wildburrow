@@ -1,3 +1,5 @@
+import dataclasses
+import hashlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -6,12 +8,24 @@ from typing import TYPE_CHECKING, Any
 
 from wildburrow.auth.base import Authenticator
 from wildburrow.core.errors import BindRejected
-from wildburrow.core.locks import Lock, Locking, build
+from wildburrow.core.indexing import Indexing, indexed
+from wildburrow.core.locks import Lock, Locking, build, entry_id
 from wildburrow.core.names import InvalidName, Name, allows, host_labels, parse_name
 from wildburrow.core.registry import NameTaken, Registry
 from wildburrow.core.sessions import Policy, Session, Sessions, describe, same
-from wildburrow.core.types import Destination, Identity, Tunnel
-from wildburrow.locks import LABEL, next_links, safe_path
+from wildburrow.core.types import (
+    Credential,
+    Destination,
+    Identity,
+    PasswordCredential,
+    Peer,
+    PublicKeyCredential,
+    SignedChallengeCredential,
+    TokenCredential,
+    Tunnel,
+)
+from wildburrow.locks import LABEL, LINK, PAGES, next_links, safe_path
+from wildburrow.store.record import Recorder
 
 if TYPE_CHECKING:
     from wildburrow.certs.manager import CertManager
@@ -25,6 +39,15 @@ class CertificateFailed(BindRejected):
 
 class NotAllowed(BindRejected):
     pass
+
+
+REFUSED = "refused"
+DENIED = "denied"
+# How each kind of credential logs in, as recorded.
+METHODS = {
+    PublicKeyCredential: "key", SignedChallengeCredential: "key", PasswordCredential: "password",
+    TokenCredential: "token",
+}  # fmt: skip
 
 
 @dataclass(slots=True)
@@ -41,6 +64,10 @@ class ServerContext:
     locks: dict[str, Lock] = field(default_factory=dict)
     certs: CertManager | None = None
     root: Destination | None = None
+    indexing: Indexing = Indexing.OPT_IN
+    record: Recorder = field(default_factory=Recorder)
+    # Ids of signed tokens denied while the server runs, or in an earlier run on file.
+    denied: set[str] = field(default_factory=set)
     # What clients are told about logging in, published once the transports know their ports.
     info: bytes = b"{}"
 
@@ -50,6 +77,26 @@ class ServerContext:
 
     async def bind_all(self, raws: Sequence[str], tunnel: Tunnel, notify: Callable[[str], None]) -> list[Name]:
         """Every one of `raws` bound to `tunnel`, or none of them, refused with everything that stood in the way."""
+        try:
+            names = await self._bind_all(raws, tunnel, notify)
+        except BindRejected as exc:
+            if tunnel.session is not None:
+                self.record.tunnel_rejected(tunnel.session, list(raws), str(exc))
+            raise
+        if tunnel.session is not None:
+            urls = {str(name): self.url(name) for name in names}
+            tunnel.records.append(self.record.tunnel_opened(tunnel.session, tunnel.lock, self.indexed(tunnel), urls))
+        return names
+
+    def release(self, tunnel: Tunnel, names: Sequence[Name]) -> None:
+        """Lets go of `names` held by `tunnel`, and records it closed."""
+        for name in names:
+            self.registry.unbind(name, tunnel)
+        for record in tunnel.records:
+            self.record.tunnel_closed(record)
+        tunnel.records.clear()
+
+    async def _bind_all(self, raws: Sequence[str], tunnel: Tunnel, notify: Callable[[str], None]) -> list[Name]:
         names: list[Name] = []
         problems: list[BindRejected] = []
         for raw in dict.fromkeys(raws):
@@ -104,7 +151,61 @@ class ServerContext:
             if session is not actor and self.policy.sees(actor.identity, session.identity)
         ]
 
-    def kick(self, actor: Session, request: dict[str, Any]) -> dict[str, Any]:
+    def indexed(self, destination: Destination) -> bool:
+        """Whether search engines may index what `destination` answers."""
+        return indexed(self.indexing, getattr(destination, "index", None))
+
+    async def authenticate(self, transport: str, credential: Credential, peer: Peer) -> Identity | None:
+        """Who `credential` logs in as, if anyone, with every try recorded; a token denied lets no one in."""
+        identity = await self.authenticator.authenticate(credential, peer)
+        reason = None if identity is not None else REFUSED
+        if identity is not None and identity.token in self.denied:
+            identity, reason = None, DENIED
+        self.record.auth(transport, METHODS[type(credential)], peer, identity, reason)
+        return identity
+
+    def open_session(
+        self, identity: Identity, transport: str, peer: Peer, end: Callable[[str], None], client: dict[str, Any]
+    ) -> Session:
+        """A session for `identity`, recorded with what its client says of itself."""
+
+        def ending(reason: str) -> None:
+            session.reason = reason
+            end(reason)
+
+        session = self.sessions.open(identity, transport, peer, ending)
+        self.record.session_opened(session, identity in self.policy.admins, client)
+        return session
+
+    def close_session(self, session: Session) -> None:
+        self.sessions.close(session)
+        self.record.session_closed(session, session.reason, session.ended_by)
+
+    def deny(self, actor: Session, tokens: list[str], command: int | None = None) -> dict[str, Any]:
+        """Stops `tokens` logging in from now on, and ends their sessions; only for an admin."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can deny tokens"}
+        ended = []
+        for token in dict.fromkeys(tokens):
+            self.denied.add(token)
+            self.record.deny(token, actor.identity)
+            for session in self.sessions:
+                if session.identity.token == token:
+                    session.ended_by = command
+                    session.end(f"its token was denied by {actor.identity.name}")
+                    ended.append(session.id)
+        return {"tokens": list(dict.fromkeys(tokens)), "ended": ended}
+
+    def reach(self, actor: Session) -> dict[str, Any]:
+        """Whether `actor` is an admin, and how far the server lets admins see and end sessions."""
+        policy = self.policy
+        return {
+            "admin": actor.identity in policy.admins,
+            "see": policy.see.name.lower(),
+            "kick": policy.kick.name.lower(),
+        }
+
+    def kick(self, actor: Session, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
         """Ends the sessions `request` picks by id, held name or identity, among those `actor` may see."""
         targets = [
             session
@@ -117,6 +218,7 @@ class ServerContext:
             if self.policy.kicks(actor.identity, session.identity):
                 kicked.append(describe(session, self.names_of(session), actor.identity, admin))
                 log.info("%s ended session %s of %s", actor.identity.name, session.id, session.identity.name)
+                session.ended_by = command
                 session.end(f"ended by {actor.identity.name}")
             else:
                 refused.append(session.id)
@@ -149,16 +251,24 @@ class ServerContext:
             if not name.wildcard:
                 plain.append(name.fqdn(self.domain))
         home = plain[0] if plain else self.domain
+
+        def recorded(state: dict[str, Any]) -> None:
+            for entry in lock.entries.values():
+                self.record.credential(lock, entry)
+            changed(state)
+
         try:
-            lock, minted = build(spec, home, not plain, self.certs is not None, self.locking, changed)
+            lock, minted = build(spec, home, not plain, self.certs is not None, self.locking, recorded)
         except ValueError as exc:
             raise BindRejected(f"lock: {exc}") from None
         tunnel.lock = self.locks[lock.id] = lock
+        self.record.lock_made(lock, tunnel.identity, lock_record(lock))
         return [{"label": label, "url": lock.link_url(key)} for label, key in minted]
 
     def unlock(self, tunnel: Tunnel) -> None:
         if (lock := tunnel.lock) is not None and self.locks.get(lock.id) is lock:
             del self.locks[lock.id]
+            self.record.lock_ended(lock)
 
     def _locked(self, actor: Identity) -> list[tuple[Tunnel, Lock]]:
         """The locked tunnels of `actor`'s own identity, each once, with their locks."""
@@ -176,7 +286,7 @@ class ServerContext:
         """Who may get into each of `actor`'s locked tunnels, and who has."""
         return [{"names": self._held(tunnel), "logins": lock.listing()} for tunnel, lock in self._locked(actor)]
 
-    def mint(self, actor: Identity, request: dict[str, Any]) -> dict[str, Any]:
+    def mint(self, actor: Identity, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
         """One more link to a locked tunnel of `actor`'s, landing on the URL `request` names."""
         address = str(request["url"]).strip()
         host, _, path = address.split("://", 1)[-1].partition("/")
@@ -188,14 +298,27 @@ class ServerContext:
         if not safe_path(path):
             return {"error": f"a link can't land on {path!r}"}
         lock = tunnel.lock
-        [label] = [str(request["label"])] if request.get("label") else next_links(lock.entries, 1)
-        if not LABEL.fullmatch(label) or label in lock.entries:
+        taken = lock.link_labels()
+        [label] = [str(request["label"])] if request.get("label") else next_links(taken, 1)
+        if not LABEL.fullmatch(label) or label in taken:
             return {"error": f"{label!r} is taken or can't name a login"}
-        expires = request.get("expires")
-        key = lock.mint(label, host, path, expires if isinstance(expires, int) else None)
+        expires, uses = request.get("expires"), request.get("uses", 1)
+        if uses is not None and (type(uses) is not int or uses < 1):
+            return {"error": "a link must be usable at least once"}
+        key = lock.mint(label, host, path, expires if isinstance(expires, int) else None, uses)
+        self.record.credential(lock, lock.entries[entry_id(LINK, label)], command)
         return {"label": label, "url": lock.link_url(key)}
 
     def end_login(self, actor: Identity, who: str) -> dict[str, Any]:
         """Ends `who`'s password or link in every locked tunnel of `actor`'s, logging out whoever used it."""
         ended = [self._held(tunnel) for tunnel, lock in self._locked(actor) if lock.end(who)]
         return {"who": who, "ended": ended}
+
+
+def lock_record(lock: Lock) -> dict[str, Any]:
+    """A lock's settings as recorded: a page of its own by its digest, not the page."""
+    settings = dataclasses.asdict(lock.settings)
+    for page in PAGES:
+        if settings[page]:
+            settings[page] = hashlib.sha256(settings[page].encode()).hexdigest()
+    return settings

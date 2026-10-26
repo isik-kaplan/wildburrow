@@ -1,108 +1,105 @@
 import asyncio
 import dataclasses
-import math
-import os
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 import click
+from isik.common.settings import UNSET, AskedAtUse, NoEnv, NoQuestion, ReplacedByFlow, Setting, Settings
 
 from wildburrow import durations
-from wildburrow.cli import ask, locking
+from wildburrow.cli import ask, locking, saved, tokens
 from wildburrow.cli.errors import Failure
 from wildburrow.cli.output import table, when
+from wildburrow.cli.settings import (
+    ANY_USES,
+    AUTH_METHODS,
+    CLIENT_PREFIX,
+    DEFAULTS,
+    TRANSPORTS,
+    Login,
+    Remote,
+    Tunnel,
+    duration,
+    never,
+    options,
+    use_limit,
+)
 from wildburrow.cli.tokens import DENY
 from wildburrow.client import discovery, ssh, websocket
-from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
+from wildburrow.client.config import ClientConfig, config_path, forget_login, read_config, write_config
 from wildburrow.config import PREFIX
 
-TOKEN_ENV = f"{PREFIX}TOKEN"
-DEFAULTS = ClientConfig("")
-ON_OFF = {True: "on", False: "off"}
-TRANSPORTS = {
-    "ssh": "ssh: your ssh binary, on port 2222",
-    "websocket": "websocket: wss:// on port 443, which gets through most proxies and firewalls",
-}
-AUTH_METHODS = {
-    "key": "key: your SSH key",
-    "password": "password: asked each time you connect",
-    "token": "token: one made with `wildburrow token NAME` on the server",
-}
+TOKEN_ENV = f"{CLIENT_PREFIX}TOKEN"
 # Tokens only travel over websocket; ssh logs in with what ssh itself offers.
 AUTH_BY_TRANSPORT = {"ssh": ("key", "password"), "websocket": tuple(AUTH_METHODS)}
 BY_TOKEN = {"transport": "websocket", "auth": "token"}
-
-
-class _Seconds(click.ParamType):
-    name = "seconds"
-
-    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> float:
-        try:
-            seconds = float(value)
-        except ValueError:
-            self.fail(f"expected a number of seconds, got {value!r}")
-        if not 0 < seconds < math.inf:
-            self.fail(f"expected a positive number of seconds, got {value!r}")
-        return seconds
-
-
-CLIENT_OPTIONS = (
-    click.Option(["--ssh-port"], type=int, help=f"(default: {DEFAULTS.ssh_port})"),
-    click.Option(["--user"], help="SSH user (default: your local user)"),
-    click.Option(["--transport"], type=click.Choice(list(TRANSPORTS)), help=f"(default: {DEFAULTS.transport})"),
-    click.Option(["--auth"], type=click.Choice(list(AUTH_METHODS)), help=f"(default: {DEFAULTS.auth})"),
-    click.Option(["--identity"], help="SSH key for websocket"),
-    click.Option(["--url"], help="websocket base URL override"),
-    click.Option(
-        ["--reconnect/--no-reconnect"],
-        default=None,
-        help=f"reconnect when the connection drops (default: {ON_OFF[DEFAULTS.reconnect]})",
-    ),
-    click.Option(
-        ["--retry-delay"],
-        type=_Seconds(),
-        metavar="SECONDS",
-        help=f"first wait before reconnecting, doubled after each failure (default: {DEFAULTS.retry_delay:g})",
-    ),
-    click.Option(
-        ["--retry-max"],
-        type=_Seconds(),
-        metavar="SECONDS",
-        help=f"longest wait between reconnects (default: {DEFAULTS.retry_max:g})",
-    ),
-)
+# Set once connect has asked for its names, so its settings are asked for too; a port asked for always comes with them.
+ASKED = "wildburrow.asked"
+# Turns the sessions listed, and the server's reach, into what to end.
+type Pick = Callable[[list[dict[str, Any]], dict[str, Any] | None], list[dict[str, str]]]
+# What a command group was given, for its subcommands.
+GROUP = "wildburrow.group"
 
 
 def _given(options: dict[str, Any]) -> dict[str, Any]:
     return {name: value for name, value in options.items() if value is not None}
 
 
-@click.command(
-    params=[
-        click.Option(["--server"], help="server to use instead of the saved one"),
-        click.Option(["--local-host"], default="localhost", show_default=True, help="where the local port listens"),
-        *CLIENT_OPTIONS,
-        *locking.OPTIONS,
-    ]
-)
-@click.argument("port", type=click.IntRange(1, 65535))
-@click.argument("names", nargs=-1, required=True, metavar="NAME...")
-def connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, **options: Any) -> int:
+def _asked_port(ctx: click.Context, param: click.Parameter, value: int | None) -> int:
+    if value is not None:
+        return value
+    if not ask.interactive():
+        raise click.MissingParameter()
+    return int(ask.text("Local port", "", ask.port))
+
+
+def _asked_names(ctx: click.Context, param: click.Parameter, value: tuple[str, ...]) -> tuple[str, ...]:
+    if value:
+        return value
+    if not ask.interactive():
+        raise click.MissingParameter()
+    ctx.meta[ASKED] = True
+    return tuple(ask.text("Names, separated by spaces (* for any one label, as in *.myapp)", "", ask.required).split())
+
+
+def _asking(given: object, no_input: bool) -> bool:
+    """Questions follow only the ones for a port and names, so a tunnel given both opens without any."""
+    return bool(click.get_current_context().meta.get(ASKED))
+
+
+@options(Tunnel, interactive=_asking, current=saved.current)
+@click.command()
+@click.argument("port", type=click.IntRange(1, 65535), required=False, metavar="PORT", callback=_asked_port)
+@click.argument("names", nargs=-1, metavar="NAME...", callback=_asked_names)
+def connect(port: int, names: tuple[str, ...], settings: Tunnel) -> int:
     """Tunnel a local port (the default command): wildburrow 3000 myapp '*.foo'"""
-    return _connect(port, names, server, local_host, options)
+    return _connect(port, names, settings)
 
 
-def _connect(port: int, names: tuple[str, ...], server: str | None, local_host: str, options: dict[str, Any]) -> int:
-    lock = locking.request({key: value for key, value in options.items() if key in locking.NAMES})
-    given = _given({key: value for key, value in options.items() if key not in locking.NAMES})
-    config = dataclasses.replace(server_config(server), **given)
+def _connect(port: int, names: tuple[str, ...], settings: Tunnel) -> int:
+    lock = locking.request(settings)
+    config = reach(settings)
+    index = None if settings.index is UNSET else settings.index
     if config.transport == "websocket":
-        return websocket.run(config, port, list(names), local_host, ask.password, lock)
+        return websocket.run(config, port, list(names), settings.local_host, ask.password, lock, index)
     if lock is not None:
-        raise Failure("--lock and --link need --transport websocket", 2)
-    return ssh.run(config, port, list(names), local_host, batch=ask.off())
+        raise Failure("a locked tunnel needs --transport websocket", 2)
+    if index is not None:
+        raise Failure("--index and --no-index need --transport websocket; an ssh tunnel takes the server's", 2)
+    return ssh.run(config, port, list(names), settings.local_host, batch=ask.off())
+
+
+def reach(settings: Remote) -> ClientConfig:
+    """The saved login, with what this command, or the group it's in, was given in its place."""
+    group = click.get_current_context().meta.get(GROUP)
+    server = settings.server or (group.server if group else "")
+    given = {**(group.connection.given() if group else {}), **settings.connection.given()}
+    if given.get("token"):
+        # A token says how to log in this time, whatever the saved login says.
+        given = {**BY_TOKEN, **given}
+    return dataclasses.replace(server_config(server or None), **given)
 
 
 def server_config(server: str | None) -> ClientConfig:
@@ -119,9 +116,6 @@ def server_config(server: str | None) -> ClientConfig:
         config = ClientConfig(server)
     else:
         config = dataclasses.replace(saved, server=server or saved.server)
-    if token := os.environ.get(TOKEN_ENV):
-        # A token in the environment is how to log in this time, whatever the saved login says.
-        config = dataclasses.replace(config, token=token, **BY_TOKEN)
     return config
 
 
@@ -217,11 +211,16 @@ def _ask_login(saved: ClientConfig) -> ClientConfig:
     return config
 
 
-@click.command(params=[click.Option(["--token"], help="token to log in with; means --auth token"), *CLIENT_OPTIONS])
+@options(Login, interactive=never)
+@click.command()
 @click.argument("server", required=False)
-def login(server: str | None, token: str | None, **options: Any) -> int:
+def login(server: str | None, settings: Login) -> int:
     """Save the server and how to connect to it. Asks for each, given no SERVER in a terminal."""
-    return _login(server, token, options)
+    return _login_given(server, settings.connection.given())
+
+
+def _login_given(server: str | None, given: dict[str, Any]) -> int:
+    return _login(server, given.pop("token", None), given)
 
 
 def _login(server: str | None, token: str | None, options: dict[str, Any]) -> int:
@@ -245,15 +244,15 @@ def _login(server: str | None, token: str | None, options: dict[str, Any]) -> in
     return 0
 
 
+@options(Remote, interactive=never, current=saved.current)
 @click.command()
-@click.option("--server", help="server to ask instead of the saved one")
-def names(server: str | None) -> int:
+def names(settings: Remote) -> int:
     """List the names bound on the server right now, and which are yours. Logs in as a tunnel would."""
-    return _names(server)
+    return _names(reach(settings))
 
 
-def _names(server: str | None) -> int:
-    held = _asked(websocket.held_names, server)
+def _names(config: ClientConfig) -> int:
+    held = _asked(websocket.held_names, config)
     if not held:
         click.echo("no names are bound")
         return 0
@@ -262,9 +261,9 @@ def _names(server: str | None) -> int:
     return 0
 
 
-def _asked[T](request: Callable[..., Awaitable[T]], server: str | None, *args: Any) -> T:
+def _asked[T](request: Callable[..., Awaitable[T]], config: ClientConfig, *args: Any) -> T:
     try:
-        return asyncio.run(request(server_config(server), *args, ask.password))
+        return asyncio.run(request(config, *args, ask.password))
     except websocket.ClientError as exc:
         raise Failure(str(exc)) from None
 
@@ -277,56 +276,125 @@ def _row(entry: dict[str, Any]) -> tuple[str, ...]:
             entry.get("from", "-"))  # fmt: skip
 
 
+@options(Remote, interactive=never, current=saved.current)
 @click.command()
-@click.option("--server", help="server to ask instead of the saved one")
-def tunnels(server: str | None) -> int:
+def tunnels(settings: Remote) -> int:
     """List who is connected to the server, as far as you may see. Logs in as a tunnel would."""
-    return _tunnels(server)
+    return _tunnels(reach(settings))
 
 
-def _tunnels(server: str | None) -> int:
-    listed(server)
+def _tunnels(config: ClientConfig) -> int:
+    listed(config)
     return 0
 
 
-def listed(server: str | None) -> list[dict[str, Any]]:
+def limited(reach: dict[str, Any] | None, level: str) -> str | None:
+    """Why an admin reaches no one else, when the server keeps admins to their own sessions."""
+    if reach is None or not reach["admin"] or reach[level] not in ("none", "own"):
+        return None
+    return f"this server keeps admins to their own sessions: {PREFIX}{level.upper()}={reach[level]}"
+
+
+def listed(config: ClientConfig) -> list[dict[str, Any]]:
     """The sessions the server shows, after printing them."""
-    found = _asked(websocket.sessions, server)
+    found, reach = _asked(websocket.sessions, config)
     if not found:
         click.echo("no other sessions you can see")
+        if hint := limited(reach, "see"):
+            click.echo(hint, err=True)
         return found
     table([("ID", "WHO", "VIA", "NAMES", "SINCE", "EXPIRES", "FROM"), *map(_row, found)])
     return found
 
 
+def pick_and_end(config: ClientConfig) -> int:
+    """Lists the sessions, and ends the one picked from them."""
+    found = listed(config)
+    if not found or not ask.confirm("End one of them?", default=False):
+        return 0
+    choices = {entry["id"]: f"{entry['id']}: {who(entry)}" for entry in found}
+    picked = ask.choose("Which?", choices, found[0]["id"])
+    return end(config, lambda listed, reach: [{"session": picked}])
+
+
+ONE_RUN = (
+    "which sessions to end is this run's to say; one left in a variable would end them on every kick that reads it"
+)
+PICKED = ReplacedByFlow(
+    flow=pick_and_end, reason="kick given nothing in a terminal lists the sessions and asks which one to end"
+)
+
+
+class Kick(Remote):
+    who = Setting(
+        str, "end every session of this identity, whatever else the word could mean; repeatable", default=(),
+        multiple=True, metavar="IDENTITY", env=NoEnv(reason=ONE_RUN), question=PICKED,
+    )  # fmt: skip
+    name = Setting(
+        str, "end whichever session holds this name, whatever else the word could mean; repeatable", default=(),
+        multiple=True, metavar="NAME", env=NoEnv(reason=ONE_RUN), question=PICKED,
+    )  # fmt: skip
+
+
+def _readings(target: str, found: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The ids of the sessions `target` names, by each thing it could be: a session id, an identity, a name held."""
+    matches = {
+        "session": [entry["id"] for entry in found if entry["id"] == target],
+        "identity": [entry["id"] for entry in found if entry["who"] == target],
+        "name": [entry["id"] for entry in found if target in entry["names"]],
+    }
+    return {kind: ids for kind, ids in matches.items() if ids}
+
+
+def _targets(targets: tuple[str, ...], found: list[dict[str, Any]], reach: dict[str, Any] | None) -> list[str]:
+    picked: dict[str, None] = {}
+    for target in targets:
+        readings = _readings(target, found)
+        if not readings:
+            hint = limited(reach, "see")
+            raise Failure("\n".join(filter(None, [f"no session you can see matches {target}", hint])))
+        if len({frozenset(ids) for ids in readings.values()}) > 1:
+            lines = [f"  as {kind}: {_listed(ids)}" for kind, ids in readings.items()]
+            pick = f"pass --who {target} or --name {target} to pick one"
+            raise Failure("\n".join([f"{target} names different sessions:", *lines, pick]), 2)
+        picked.update(dict.fromkeys(next(iter(readings.values()))))
+    return list(picked)
+
+
+@options(Kick, interactive=never, current=saved.current)
 @click.command()
-@click.argument("session", required=False)
-@click.option("--name", help="end whichever session holds this name")
-@click.option("--who", help="end every session of this identity")
-@click.option("--server", help="server to ask instead of the saved one")
-def kick(session: str | None, name: str | None, who: str | None, server: str | None) -> int:
-    """End sessions on the server: by id from `wildburrow tunnels`, by a name held, or by identity."""
-    return _kick(session, name, who, server)
+@click.argument("targets", nargs=-1, metavar="[TARGET]...")
+def kick(targets: tuple[str, ...], settings: Kick) -> int:
+    """End sessions on the server, each TARGET a session id from `wildburrow tunnels`, an identity or a name held."""
+    return _kick(targets, settings)
 
 
-def _kick(session: str | None, name: str | None, who: str | None, server: str | None) -> int:
-    picked = {key: value for key, value in {"session": session, "name": name, "who": who}.items() if value}
-    if len(picked) != 1:
-        raise click.UsageError("pass one of SESSION, --name and --who")
-    return end(server, picked)
+def _kick(targets: tuple[str, ...], settings: Kick) -> int:
+    if not (targets or settings.who or settings.name):
+        if not ask.interactive():
+            raise click.UsageError("pass TARGET, --who or --name")
+        return pick_and_end(reach(settings))
+    forced = [{"who": who} for who in settings.who] + [{"name": name} for name in settings.name]
+    return end(
+        reach(settings), lambda found, limits: [{"session": id} for id in _targets(targets, found, limits)] + forced
+    )
 
 
-def end(server: str | None, picked: dict[str, str]) -> int:
-    """Ends what `picked` names, saying what ended and how it could come back."""
-    answer = _asked(websocket.kick, server, picked)
+def end(config: ClientConfig, pick: Pick) -> int:
+    """Ends what `pick` makes of the sessions listed, saying what ended and how it could come back."""
+    answer = _asked(websocket.kick, config, pick)
     for entry in answer["sessions"]:
         click.echo(f"ended {entry['id']}: {who(entry)}")
         if hint := _still_valid(entry):
             click.echo(f"  {hint}")
     for refused in answer["refused"]:
         click.echo(f"not allowed to end {refused}", err=True)
+    if answer["refused"] and (hint := limited(answer["reach"], "kick")):
+        click.echo(hint, err=True)
     if not answer["sessions"] and not answer["refused"]:
         click.echo("no session you can see matches", err=True)
+        if hint := limited(answer["reach"], "see"):
+            click.echo(hint, err=True)
     return 0 if answer["sessions"] and not answer["refused"] else 1
 
 
@@ -348,11 +416,19 @@ def _still_valid(entry: dict[str, Any]) -> str | None:
     return f"their token {entry['token']} logs in {until}; to stop it sooner, add the id to {DENY}"
 
 
+class Logout(Settings, prefix=CLIENT_PREFIX):
+    yes = Setting(
+        bool, "don't ask first", option=("-y", "--yes"), default=False, negatable=False,
+        env=NoEnv(reason="forgetting the login is this run's to decide; a variable would skip the question for good"),
+        question=AskedAtUse(reason="the question names the saved server, so it's asked once that's been read"),
+    )  # fmt: skip
+
+
+@options(Logout, interactive=never)
 @click.command()
-@click.option("--yes", "-y", is_flag=True, help="don't ask first")
-def logout(yes: bool) -> int:
+def logout(settings: Logout) -> int:
     """Forget the saved server."""
-    return _logout(yes)
+    return _logout(settings.yes)
 
 
 def _logout(yes: bool) -> int:
@@ -363,72 +439,144 @@ def _logout(yes: bool) -> int:
         return 0
     if not yes and ask.interactive() and not ask.confirm(f"Forget {saved.server}?"):
         return 1
-    path.unlink()
-    click.echo(f"removed {path}")
+    forget_login(path)
+    click.echo(f"forgot {saved.server}")
     return 0
 
 
-@click.command("link")
+@options(Remote, interactive=never, current=saved.current)
+@click.group(invoke_without_command=True)
+@click.pass_context
+def links(ctx: click.Context, settings: Remote) -> int | None:
+    """List who may get into your locked tunnels, and who has; add or end their links and passwords."""
+    return _links_group(ctx, settings)
+
+
+def _links_group(ctx: click.Context, settings: Remote) -> int | None:
+    if ctx.invoked_subcommand is None:
+        return _links(reach(settings))
+    ctx.meta[GROUP] = settings
+    return None
+
+
+ADDED = "a link is one person's way in; a variable would give every link it mints the same"
+SAID = NoQuestion(reason="links add takes what it needs on its command line, and the link it prints is all it does")
+
+
+class LinkAdd(Remote):
+    label = Setting(
+        str, "label it, as your app is told who logged in", option="--as", default=UNSET, shown="the next link-N",
+        metavar="LABEL", env=NoEnv(reason=f"{ADDED} label, which the server refuses"), question=SAID,
+    )  # fmt: skip
+    expires = Setting(
+        duration, "stop it working after this long", default=UNSET, shown="with the tunnel", metavar="DURATION",
+        env=NoEnv(reason=f"{ADDED} expiry, without anyone choosing it for that link"), question=SAID,
+    )  # fmt: skip
+    uses = Setting(
+        use_limit, "how often it works: a number, or any for no limit", default=1, metavar="N|any",
+        env=NoEnv(reason=f"{ADDED} limit, without anyone choosing it for that link"), question=SAID,
+    )  # fmt: skip
+
+
+@options(LinkAdd, interactive=never, current=saved.current)
+@links.command("add")
 @click.argument("url")
-@click.option("--as", "label", help="label it, as your app is told who logged in (default: the next link-N)")
-@click.option("--expires", metavar="DURATION", help="stop it working after this long (default: with the tunnel)")
-@click.option("--server", help="server to ask instead of the saved one")
-def link(url: str, label: str | None, expires: str | None, server: str | None) -> int:
+def add_link(url: str, settings: LinkAdd) -> int:
     """Make one more one-time link to a locked tunnel of yours, landing on URL."""
-    return _link(url, label, expires, server)
+    return _add_link(url, settings)
 
 
-def _link(url: str, label: str | None, expires: str | None, server: str | None) -> int:
-    request: dict[str, Any] = {"url": url, "label": label}
-    if expires is not None:
-        if (length := durations.seconds(expires)) is None:
-            raise Failure(f"--expires: expected a duration {durations.EXAMPLES}, got {expires!r}", 2)
-        request["expires"] = int(time.time()) + length
-    answer = _asked(websocket.link, server, request)
+def _add_link(url: str, settings: LinkAdd) -> int:
+    label = None if settings.label is UNSET else settings.label
+    request: dict[str, Any] = {"url": url, "label": label, "uses": settings.uses}
+    if settings.expires is not UNSET:
+        request["expires"] = int(time.time()) + durations.seconds(settings.expires)
+    answer = _asked(websocket.link, reach(settings), request)
     if "error" in answer:
         raise Failure(str(answer["error"]))
     click.echo(f"{answer['label']}  {answer['url']}")
     return 0
 
 
-@click.command()
-@click.option("--end", "who", metavar="WHO", help="end this password or link, logging out whoever used it")
-@click.option("--server", help="server to ask instead of the saved one")
-def links(who: str | None, server: str | None) -> int:
-    """List who may get into your locked tunnels, and who has. Logs in as a tunnel would."""
-    return _links(who, server)
+@options(Remote, interactive=never, current=saved.current)
+@links.command("end")
+@click.argument("whos", nargs=-1, required=True, metavar="WHO...")
+def end_links(whos: tuple[str, ...], settings: Remote) -> int:
+    """End passwords or links, by the WHO `wildburrow links` lists, logging out whoever used them."""
+    return _end_links(whos, settings)
 
 
-def _status(entry: dict[str, Any]) -> str:
+def _end_links(whos: tuple[str, ...], settings: Remote) -> int:
+    missing = []
+    for answer in _asked(websocket.end_logins, reach(settings), whos):
+        for names in answer["ended"]:
+            click.echo(f"ended {answer['who']} on {_listed(names)}")
+        if not answer["ended"]:
+            missing.append(answer["who"])
+    if missing:
+        raise Failure(f"no password or link named {_listed(missing)} in your locked tunnels")
+    return 0
+
+
+def _spent(entry: dict[str, Any]) -> tuple[int, int | None]:
+    """How often a link has been used and may be; a server before 0.5.0 says only when one single-use link was."""
+    return entry.get("spent", int(entry["used"] is not None)), entry.get("uses", 1)
+
+
+def _state(entry: dict[str, Any]) -> str:
     if entry["ended"]:
         return "ended"
     if entry["kind"] == "password":
-        return f"{entry['logins']} login{'' if entry['logins'] == 1 else 's'}" if entry["logins"] else "-"
-    if entry["used"] is not None:
-        return f"used {when(entry['used'])}"
+        return "open"
+    spent, uses = _spent(entry)
+    if uses is not None and spent >= uses:
+        return "used up"
     if entry["expires"] is not None and entry["expires"] <= time.time():
         return "expired"
-    return "unused" if entry["expires"] is None else f"unused, until {when(entry['expires'])}"
+    return "open"
 
 
-def _links(who: str | None, server: str | None) -> int:
-    if who is not None:
-        answer = _asked(websocket.end_login, server, who)
-        for names in answer["ended"]:
-            click.echo(f"ended {who} on {_listed(names)}")
-        if not answer["ended"]:
-            raise Failure(f"no password or link named {who} in your locked tunnels")
-        return 0
-    found = _asked(websocket.logins, server)
+def _uses(entry: dict[str, Any]) -> str:
+    if entry["kind"] == "password":
+        return "-"
+    spent, uses = _spent(entry)
+    return f"{spent}/{ANY_USES if uses is None else uses}"
+
+
+def _login_row(entry: dict[str, Any]) -> tuple[str, ...]:
+    """One password's or link's line in `links`."""
+    seen = "-" if entry["seen"] is None else when(entry["seen"])
+    expires = "-" if entry["expires"] is None else when(entry["expires"])
+    return entry["who"], entry["kind"], _state(entry), _uses(entry), str(entry["logins"]), seen, expires
+
+
+def _links(config: ClientConfig) -> int:
+    found = _asked(websocket.logins, config)
     if not found:
         click.echo("no locked tunnels of yours")
     for index, tunnel in enumerate(found):
         if index:
             click.echo()
         click.echo(_listed(tunnel["names"]))
-        rows = [
-            (entry["who"], entry["kind"], _status(entry), "-" if entry["seen"] is None else when(entry["seen"]))
-            for entry in tunnel["logins"]
-        ]
-        table([("WHO", "KIND", "USED", "LAST SEEN"), *rows])
+        rows = [_login_row(entry) for entry in tunnel["logins"]]
+        table([("WHO", "KIND", "STATE", "USES", "LOGINS", "LAST SEEN", "EXPIRES"), *rows])
+    return 0
+
+
+@options(Remote, interactive=never, current=saved.current)
+@tokens.tokens_group.command("deny")
+@click.argument("ids", nargs=-1, required=True, metavar="ID...")
+def deny_tokens(ids: tuple[str, ...], settings: Remote) -> int:
+    """Stop tokens logging in, by the ID `tokens` lists, ending their sessions now; for an admin of the server."""
+    return _deny_tokens(ids, settings)
+
+
+def _deny_tokens(ids: tuple[str, ...], settings: Remote) -> int:
+    answer = _asked(websocket.deny, reach(settings), ids)
+    if "error" in answer:
+        raise Failure(str(answer["error"]))
+    for token in answer["tokens"]:
+        click.echo(f"denied {token}")
+    if answer["ended"]:
+        click.echo(f"ended {len(answer['ended'])} of their sessions")
     return 0

@@ -1,9 +1,0 @@
-Usage: wildburrow link [OPTIONS] URL
-
-  Make one more one-time link to a locked tunnel of yours, landing on URL.
-
-Options:
-  --as TEXT           label it, as your app is told who logged in (default: the next link-N)
-  --expires DURATION  stop it working after this long (default: with the tunnel)
-  --server TEXT       server to ask instead of the saved one
-  -h, --help          Show this message and exit.

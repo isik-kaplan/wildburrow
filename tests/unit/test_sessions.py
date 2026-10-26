@@ -172,7 +172,7 @@ def test_ending_never_reaches_further_than_seeing(see: Level, kick: Level) -> No
 
 
 def test_the_default_policy() -> None:
-    assert Policy() == Policy(Admins(), Level.OWN, Level.OWN)
+    assert Policy() == Policy(Admins(), Level.ADMINS, Level.ADMINS)
 
 
 class Ended:

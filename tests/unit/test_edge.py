@@ -11,6 +11,7 @@ from tests.unit.test_http import Reader, Writer
 from wildburrow.core.context import ServerContext
 from wildburrow.core.errors import TunnelUnavailable
 from wildburrow.core.types import Peer
+from wildburrow.edge.exchange import tagged
 from wildburrow.edge.http import Edge
 
 LOOPBACK = [ipaddress.ip_network("127.0.0.0/8")]
@@ -87,7 +88,7 @@ async def test_stopping_ends_requests_still_waiting_on_a_tunnel(ctx: ServerConte
 async def test_finished_requests_leave_no_handler_behind(ctx: ServerContext) -> None:
     ctx.root = Root()
     async with running(ctx) as edge:
-        assert (await exchange("127.0.0.1", edge.port, REQUEST))[0] == REPLY
+        assert (await exchange("127.0.0.1", edge.port, REQUEST))[0] == tagged(REPLY)
         async with asyncio.timeout(2):
             while edge._handlers:
                 await asyncio.sleep(0.01)
@@ -102,7 +103,7 @@ async def test_ipv6_visitors_reach_the_tunnel(ctx: ServerContext) -> None:
     ctx.root = root = Root()
     async with running(ctx, "::1") as edge:
         reply, port = await exchange("::1", edge.port, REQUEST)
-    assert reply == REPLY
+    assert reply == tagged(REPLY)
     assert root.peers == [Peer("::1", port)]
 
 
@@ -126,7 +127,7 @@ async def test_an_unknown_proxied_address_falls_back_to_the_proxy(ctx: ServerCon
     ctx.root = root = Root()
     async with running(ctx, proxy_from=LOOPBACK) as edge:
         reply, port = await exchange("127.0.0.1", edge.port, b"PROXY UNKNOWN\r\n" + REQUEST)
-    assert reply == REPLY
+    assert reply == tagged(REPLY)
     assert root.peers == [Peer("127.0.0.1", port)]
 
 

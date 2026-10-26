@@ -537,6 +537,21 @@ wheels = [
 ]
 
 [[package]]
+name = "isik"
+version = "0.35.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/83/e14219f1002efdf7c464bf8d2de28c7fb3ab78a00c3718cd2deca76b2758/isik-0.35.1.tar.gz", hash = "sha256:9d57a781991853cc342ea2fe18356765f128b0390a95fcc872f92217bacee350", size = 741900, upload-time = "2026-10-25T15:45:35.877Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/ac/afe54a63484e3d32289a6781bed229cb5d9e6fbcfe8b09bf0bf41ee81e55/isik-0.35.1-py3-none-any.whl", hash = "sha256:ca17b51bd39a037b43cb346da20dfed61892992771a08e3b4c9ddeb11ed31b66", size = 282326, upload-time = "2026-10-25T15:45:33.951Z" },
+]
+
+[package.optional-dependencies]
+cli = [
+    { name = "click" },
+    { name = "questionary" },
+]
+
+[[package]]
 name = "josepy"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1118,6 +1133,7 @@ version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "isik", extra = ["cli"] },
     { name = "questionary" },
     { name = "websockets" },
 ]
@@ -1152,6 +1168,7 @@ requires-dist = [
     { name = "click", specifier = "==8.5.0" },
     { name = "cryptography", marker = "extra == 'server'", specifier = "==50.0.2" },
     { name = "httpx", marker = "extra == 'server'", specifier = "==0.28.1" },
+    { name = "isik", extras = ["cli"], specifier = "==0.35.1" },
     { name = "josepy", marker = "extra == 'server'", specifier = "==2.2.0" },
     { name = "questionary", specifier = "==2.1.1" },
     { name = "websockets", specifier = "==17.2" },

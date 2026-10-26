@@ -17,6 +17,7 @@ from wildburrow.core.errors import BindRejected
 from wildburrow.core.locks import (
     ATTEMPT_WINDOW,
     MAX_CODES,
+    SEEN_EVERY,
     Code,
     Entry,
     Lock,
@@ -24,6 +25,7 @@ from wildburrow.core.locks import (
     build,
     challenge,
     digest,
+    entry_id,
 )
 from wildburrow.core.names import Name
 from wildburrow.core.types import Identity
@@ -205,6 +207,14 @@ def test_where_a_lock_lives() -> None:
     assert lock_of(code_seconds=5)[0].code_seconds == 5
 
 
+def P(label: str) -> str:
+    return entry_id(PASSWORD, label)
+
+
+def L(label: str) -> str:
+    return entry_id(LINK, label)
+
+
 def test_cookie_names() -> None:
     plain, _, _ = lock_of()
     assert plain.cookie_name() == plain.home_cookie_name() == "wildburrow"
@@ -221,12 +231,12 @@ def test_cookie_names() -> None:
 def test_passwords_log_in() -> None:
     lock, _, _ = lock_of()
     lock.add_password("alice", "wonderland")
-    lock.add_link("bob", digest("key"), "", "/", None, None)
-    assert lock.login("alice", "wonderland") is lock.entries["alice"]
+    lock.add_link("bob", digest("key"), "", "/", None)
+    assert lock.login("alice", "wonderland") is lock.entries[P("alice")]
     assert lock.login("alice", "wrong") is None
     assert lock.login("carol", "wonderland") is None
     assert lock.login("bob", "") is None
-    assert lock.entries["alice"].password != b"wonderland"
+    assert lock.entries[P("alice")].password != b"wonderland"
     assert lock.has_passwords()
     lock.end("alice")
     assert lock.login("alice", "wonderland") is None
@@ -235,7 +245,7 @@ def test_passwords_log_in() -> None:
 
 def test_a_lock_of_links_has_no_passwords() -> None:
     lock, _, _ = lock_of()
-    lock.add_link("bob", digest("key"), "", "/", None, None)
+    lock.add_link("bob", digest("key"), "", "/", None)
     assert not lock.has_passwords()
 
 
@@ -273,15 +283,15 @@ def test_now_is_whole_seconds() -> None:
 def test_cookies_let_in_their_holder_on_their_host() -> None:
     lock, clock, _ = lock_of()
     lock.add_password("a.b", "pw")
-    entry = lock.entries["a.b"]
+    entry = lock.entries[P("a.b")]
     cookie = lock.cookie(HOME, entry, 0)
-    assert cookie.startswith("a.b.0.")
+    assert cookie.startswith("password:a.b.0.")
     assert lock.admitted(HOME, cookie) == (entry, 0)
     assert lock.admitted("other.example.com", cookie) is None
     label, until, mac = cookie.rsplit(".", 2)
     assert lock.admitted(HOME, f"{label}.{until}.{mac[:-1]}x") is None
     assert lock.admitted(HOME, f"{label}.1.{mac}") is None
-    assert lock.admitted(HOME, f"a.b.x.{mac}") is None
+    assert lock.admitted(HOME, f"password:a.b.x.{mac}") is None
     assert lock.admitted(HOME, None) is None
     assert lock.admitted(HOME, "a.b") is None
     assert lock.admitted(HOME, "") is None
@@ -293,15 +303,15 @@ def test_cookies_let_in_their_holder_on_their_host() -> None:
 def test_a_cookie_is_an_hmac_of_its_host_login_and_end() -> None:
     lock, _, _ = lock_of()
     lock.add_password("alice", "pw")
-    mac = hmac.new(SECRET, "\0".join(["cookie", HOME, "alice", "7"]).encode(), hashlib.sha256).digest()
+    mac = hmac.new(SECRET, "\0".join(["cookie", HOME, "password:alice", "7"]).encode(), hashlib.sha256).digest()
     expected = base64.urlsafe_b64encode(mac).decode().rstrip("=")
-    assert lock.cookie(HOME, lock.entries["alice"], 7) == f"alice.7.{expected}"
+    assert lock.cookie(HOME, lock.entries[P("alice")], 7) == f"password:alice.7.{expected}"
 
 
 def test_a_cookie_ends_with_its_login() -> None:
     lock, clock, _ = lock_of()
     lock.add_password("alice", "pw")
-    entry = lock.entries["alice"]
+    entry = lock.entries[P("alice")]
     cookie = lock.cookie(HOME, entry, NOW + 10)
     assert lock.admitted(HOME, cookie) == (entry, NOW + 10)
     clock.now = NOW + 9.5
@@ -323,13 +333,14 @@ def test_a_cookie_for_a_login_that_isnt_there_lets_no_one_in() -> None:
 def test_links_open_once() -> None:
     lock, clock, changes = lock_of()
     lock.add_password("alice", "pw")
-    lock.add_link("old", digest("other"), "", "/", None, None)
-    key = lock.mint("bob", "a.foo.example.com", "/x", None)
-    entry = lock.entries["bob"]
+    lock.add_link("old", digest("other"), "", "/", None)
+    key = lock.mint("bob", "a.foo.example.com", "/x", None, 1)
+    entry = lock.entries[L("bob")]
     assert (entry.kind, entry.key, entry.host, entry.path) == (LINK, digest(key), "a.foo.example.com", "/x")
-    old = {"key": digest("other"), "host": "", "path": "/", "expires": None, "used": None}
-    bob = {"key": digest(key), "host": "a.foo.example.com", "path": "/x", "expires": None, "used": None}
-    assert changes == [{"links": {"old": old, "bob": bob}, "ended": []}]
+    unused = {"expires": None, "used": None, "spent": 0, "uses": 1}
+    old = {"key": digest("other"), "host": "", "path": "/", **unused}
+    bob = {"key": digest(key), "host": "a.foo.example.com", "path": "/x", **unused}
+    assert changes == [{"links": {"old": old, "bob": bob}, "ended": [], "counts": {}}]
     assert lock.link(key) is entry
     assert lock.link("wrong") is None
     clock.now += 5
@@ -342,12 +353,12 @@ def test_links_open_once() -> None:
 
 def test_links_end_and_expire() -> None:
     lock, clock, _ = lock_of()
-    ended = lock.mint("a", "", "/", None)
+    ended = lock.mint("a", "", "/", None, 1)
     lock.end("a")
     assert lock.link(ended) is None
-    expiring = lock.mint("b", "", "/", NOW + 10)
+    expiring = lock.mint("b", "", "/", NOW + 10, 1)
     clock.now = NOW + 9
-    assert lock.link(expiring) is lock.entries["b"]
+    assert lock.link(expiring) is lock.entries[L("b")]
     clock.now = NOW + 10
     assert lock.link(expiring) is None
 
@@ -355,7 +366,7 @@ def test_links_end_and_expire() -> None:
 def test_logins_and_sightings_are_counted() -> None:
     lock, clock, _ = lock_of()
     lock.add_password("alice", "pw")
-    entry = lock.entries["alice"]
+    entry = lock.entries[P("alice")]
     lock.logged_in(entry)
     clock.now += 3
     lock.seen(entry)
@@ -368,20 +379,20 @@ def test_ending_tells_the_client_once() -> None:
     assert lock.end("alice")
     assert not lock.end("alice")
     assert not lock.end("nobody")
-    assert changes == [{"links": {}, "ended": ["alice"]}]
+    assert changes == [{"links": {}, "ended": ["password:alice"], "counts": {}}]
 
 
 def test_codes_carry_a_login_to_one_host_in_one_browser() -> None:
     lock, _, _ = lock_of()
     lock.add_password("alice", "pw")
-    entry = lock.entries["alice"]
+    entry = lock.entries[P("alice")]
     code = lock.issue("a.foo.example.com", challenge("v"), entry, 7, "/to")
     assert lock.redeem(code, "b.foo.example.com", "v") is None
     code = lock.issue("a.foo.example.com", challenge("v"), entry, 7, "/to")
     assert lock.redeem(code, "a.foo.example.com", "w") is None
     code = lock.issue("a.foo.example.com", challenge("v"), entry, 7, "/to")
     redeemed = lock.redeem(code, "a.foo.example.com", "v")
-    assert redeemed == (Code("a.foo.example.com", challenge("v"), "alice", 7, "/to", NOW), entry)
+    assert redeemed == (Code("a.foo.example.com", challenge("v"), "password:alice", 7, "/to", NOW), entry)
     assert lock.redeem(code, "a.foo.example.com", "v") is None
     assert lock.redeem("unknown", "a.foo.example.com", "v") is None
 
@@ -389,7 +400,7 @@ def test_codes_carry_a_login_to_one_host_in_one_browser() -> None:
 def test_codes_expire_and_die_with_their_login() -> None:
     lock, clock, _ = lock_of(code_seconds=10)
     lock.add_password("alice", "pw")
-    entry = lock.entries["alice"]
+    entry = lock.entries[P("alice")]
     code = lock.issue("a", challenge("v"), entry, 0, "/")
     clock.now = NOW + 9
     kept = lock.issue("a", challenge("v"), entry, 0, "/")
@@ -404,7 +415,7 @@ def test_codes_expire_and_die_with_their_login() -> None:
 def test_old_codes_make_way_for_new_ones() -> None:
     lock, _, _ = lock_of()
     lock.add_password("alice", "pw")
-    entry = lock.entries["alice"]
+    entry = lock.entries[P("alice")]
     first = lock.issue("a", challenge("v"), entry, 0, "/")
     second = lock.issue("a", challenge("v"), entry, 0, "/")
     for _ in range(MAX_CODES - 2):
@@ -419,20 +430,25 @@ def test_old_codes_make_way_for_new_ones() -> None:
 def test_state_and_listing() -> None:
     lock, _, _ = lock_of()
     lock.add_password("alice", "pw")
-    lock.add_link("bob", digest("k"), "a.foo.example.com", "/x", NOW + 60, NOW)
-    lock.entries["bob"].logins = 1
-    lock.entries["bob"].seen = NOW + 1
+    bob = lock.add_link("bob", digest("k"), "a.foo.example.com", "/x", NOW + 60)
+    bob.used, bob.spent, bob.uses, bob.logins, bob.seen = NOW, 1, 3, 1, NOW + 1
     lock.end("alice")
     assert lock.state() == {
         "links": {
-            "bob": {"key": digest("k"), "host": "a.foo.example.com", "path": "/x", "expires": NOW + 60, "used": NOW}
+            "bob": {
+                "key": digest("k"), "host": "a.foo.example.com", "path": "/x", "expires": NOW + 60, "used": NOW,
+                "spent": 1, "uses": 3,
+            }
         },
-        "ended": ["alice"],
-    }
+        "ended": ["password:alice"],
+        "counts": {"link:bob": {"logins": 1, "seen": NOW + 1}},
+    }  # fmt: skip
     assert lock.listing() == [
-        {"who": "alice", "kind": "password", "used": None, "logins": 0, "seen": None, "expires": None, "ended": True},
-        {"who": "bob", "kind": "link", "used": NOW, "logins": 1, "seen": NOW + 1, "expires": NOW + 60, "ended": False},
-    ]
+        {"who": "alice", "kind": "password", "used": None, "spent": 0, "uses": 1, "logins": 0, "seen": None,
+         "expires": None, "ended": True},
+        {"who": "bob", "kind": "link", "used": NOW, "spent": 1, "uses": 3, "logins": 1, "seen": NOW + 1,
+         "expires": NOW + 60, "ended": False},
+    ]  # fmt: skip
 
 
 def spec(**changes: Any) -> dict[str, Any]:
@@ -454,21 +470,22 @@ def test_a_lock_is_built_as_asked() -> None:
     assert lock.id == lock_of()[0].id
     assert lock.now() == NOW
     assert (lock.home, lock.secure, lock.settings.cookie) == (HOME, True, "pass")
-    assert lock.login("alice", "pw") is lock.entries["alice"]
-    bob = lock.entries["bob"]
-    assert (bob.kind, bob.key, bob.host, bob.path, bob.expires, bob.used, bob.ended) == (
-        LINK, digest("k"), "a.foo.example.com", "/x", NOW + 1, 5, True,
+    assert lock.login("alice", "pw") is lock.entries[P("alice")]
+    bob = lock.entries[L("bob")]
+    assert (bob.kind, bob.key, bob.host, bob.path, bob.expires, bob.used, bob.spent, bob.uses, bob.ended) == (
+        LINK, digest("k"), "a.foo.example.com", "/x", NOW + 1, 5, 1, 1, True,
     )  # fmt: skip
     assert [label for label, _ in minted] == ["link-1", "carol"]
-    assert lock.link(minted[0][1]) is lock.entries["link-1"]
-    assert lock.entries["link-1"].expires == NOW + 2
-    assert (lock.entries["carol"].expires, lock.entries["carol"].host, lock.entries["carol"].path) == (None, "", "/")
+    assert lock.link(minted[0][1]) is lock.entries[L("link-1")]
+    assert lock.entries[L("link-1")].expires == NOW + 2
+    carol = lock.entries[L("carol")]
+    assert (carol.expires, carol.host, carol.path, carol.uses) == (None, "", "/", 1)
 
 
 def test_a_lock_takes_links_with_little_said() -> None:
     lock, _ = built({"secret": SECRET_TEXT, "links": {"bob": {"key": digest("k")}}})
-    bob = lock.entries["bob"]
-    assert (bob.host, bob.path, bob.expires, bob.used) == ("", "/", None, None)
+    bob = lock.entries[L("bob")]
+    assert (bob.host, bob.path, bob.expires, bob.used, bob.spent, bob.uses) == ("", "/", None, None, 0, 1)
     assert built({"secret": SECRET_TEXT, "mint": [{"label": "x"}]}, on_domain=True)[0].on_domain
 
 
@@ -497,13 +514,20 @@ def test_a_lock_takes_links_with_little_said() -> None:
         (spec(links={"bob": {"key": digest("k"), "path": "//x"}}), "'//x' isn't a path a link can land on"),
         (spec(links={"bob": {"key": digest("k"), "expires": "1"}}), "a link's expiry has the wrong type"),
         (spec(links={"bob": {"key": digest("k"), "used": True}}), "a link's use has the wrong type"),
-        (spec(links={"alice": {"key": digest("k")}}), "'alice' names two logins"),
+        (spec(links={"bob": {"key": digest("k"), "spent": "1"}}), "a link's uses so far has the wrong type"),
+        (spec(links={"bob": {"key": digest("k"), "uses": 0}}), "a link must be usable at least once"),
+        (spec(links={"bob": {"key": digest("k"), "uses": "any"}}), "a link's uses has the wrong type"),
+        (spec(counts=[]), "the lock's login counts has the wrong type"),
+        (spec(counts={"password:alice": 1}), "a login count has the wrong type"),
+        (spec(counts={"password:alice": {"logins": "1"}}), "a login count has the wrong type"),
+        (spec(counts={"password:alice": {"seen": "now"}}), "when a login was last seen has the wrong type"),
         (spec(ended={}), "the lock's ended logins has the wrong type"),
         (spec(ended=[1]), "an ended login has the wrong type"),
         (spec(mint={}), "the links to mint has the wrong type"),
         (spec(mint=["x"]), "a link to mint has the wrong type"),
         (spec(mint=[{}]), "a lock label has the wrong type"),
-        (spec(mint=[{"label": "alice"}]), "'alice' names two logins"),
+        (spec(mint=[{"label": "x"}, {"label": "x"}]), "'x' names two logins"),
+        (spec(mint=[{"label": "x", "uses": -1}]), "a link must be usable at least once"),
         (spec(mint=[{"label": "x", "expires": 1.5}]), "a link's expiry has the wrong type"),
         ({"secret": SECRET_TEXT}, "a lock needs a password or a link"),
         ({"secret": SECRET_TEXT, "users": {}, "links": {}, "mint": []}, "a lock needs a password or a link"),
@@ -629,14 +653,15 @@ async def test_links_are_minted_only_for_your_own_locked_tunnels(ctx: ServerCont
     bound(ctx, open_tunnel, "baz")
     minted = ctx.mint(ALICE, {"url": "https://a.foo.example.com:8443/x?y=1"})
     assert minted["label"] == "link-1"
-    assert mine.lock.entries["link-1"].host == "a.foo.example.com"
-    assert mine.lock.entries["link-1"].path == "/x?y=1"
+    assert mine.lock.entries[L("link-1")].host == "a.foo.example.com"
+    assert mine.lock.entries[L("link-1")].path == "/x?y=1"
+    assert mine.lock.entries[L("link-1")].uses == 1
     assert ctx.mint(ALICE, {"url": "foo.example.com", "label": "bob", "expires": NOW})["label"] == "bob"
-    assert (mine.lock.entries["bob"].path, mine.lock.entries["bob"].expires) == ("/", NOW)
+    assert (mine.lock.entries[L("bob")].path, mine.lock.entries[L("bob")].expires) == ("/", NOW)
     assert ctx.mint(ALICE, {"url": "foo.example.com", "expires": "soon"})["label"] == "link-2"
     assert ctx.mint(ALICE, {"url": "http://foo.example.com/x://y"})["label"] == "link-3"
-    assert mine.lock.entries["link-3"].path == "/x://y"
-    assert mine.lock.entries["link-2"].expires is None
+    assert mine.lock.entries[L("link-3")].path == "/x://y"
+    assert mine.lock.entries[L("link-2")].expires is None
     for url, error in [
         ("bar.example.com", "no locked tunnel of yours serves 'bar.example.com'"),
         ("baz.example.com", "no locked tunnel of yours serves 'baz.example.com'"),
@@ -665,3 +690,116 @@ async def test_logins_and_ending_them_reach_only_your_own_tunnels(ctx: ServerCon
     assert ctx.end_login(ALICE, "alice") == {"who": "alice", "ended": [["foo", "*.foo"]]}
     assert ctx.end_login(ALICE, "alice") == {"who": "alice", "ended": []}
     assert theirs.lock.login("alice", "pw") is not None
+
+
+def test_one_name_can_have_a_password_and_a_link() -> None:
+    lock, _, changes = lock_of()
+    password = lock.add_password("anil", "pw")
+    key = lock.mint("anil", "", "/", None, 1)
+    link = lock.entries[L("anil")]
+    assert lock.login("anil", "pw") is password
+    assert lock.link(key) is link
+    assert (password.label, link.label) == ("anil", "anil")
+    assert lock.admitted(HOME, lock.cookie(HOME, link, 0)) == (link, 0)
+    assert lock.admitted(HOME, lock.cookie(HOME, password, 0)) == (password, 0)
+    assert [entry["who"] for entry in lock.listing()] == ["anil", "anil"]
+    assert lock.end("anil")
+    assert (password.ended, link.ended) == (True, True)
+    assert changes[-1]["ended"] == [P("anil"), L("anil")]
+
+
+def test_ending_a_password_keeps_a_cookie_from_the_link_working() -> None:
+    lock, _, _ = lock_of()
+    lock.add_password("anil", "pw")
+    lock.mint("anil", "", "/", None, 1)
+    link = lock.entries[L("anil")]
+    cookie = lock.cookie(HOME, link, 0)
+    lock.entries[P("anil")].ended = True
+    assert lock.admitted(HOME, cookie) == (link, 0)
+
+
+@pytest.mark.parametrize("uses", [1, 3, None])
+def test_a_link_works_as_often_as_it_may(uses: int | None) -> None:
+    lock, clock, _ = lock_of()
+    key = lock.mint("bob", "", "/", None, uses)
+    entry = lock.entries[L("bob")]
+    for spent in range(1, 6):
+        if uses is not None and spent > uses:
+            assert lock.link(key) is None
+            continue
+        assert lock.link(key) is entry
+        clock.now += 1
+        lock.spend(entry)
+        assert (entry.spent, entry.used, entry.logins) == (spent, int(clock.now), spent)
+
+
+def test_sightings_reach_the_client_no_more_than_once_a_minute() -> None:
+    lock, clock, changes = lock_of()
+    entry = lock.add_password("alice", "pw")
+    lock.logged_in(entry)
+    assert changes[-1]["counts"] == {P("alice"): {"logins": 1, "seen": NOW}}
+    told = len(changes)
+    clock.now = NOW + SEEN_EVERY - 1
+    lock.seen(entry)
+    assert (len(changes), entry.seen) == (told, NOW + SEEN_EVERY - 1)
+    clock.now = NOW + SEEN_EVERY
+    lock.seen(entry)
+    assert len(changes) == told + 1
+    assert changes[-1]["counts"] == {P("alice"): {"logins": 1, "seen": NOW + SEEN_EVERY}}
+    lock.seen(entry)
+    assert len(changes) == told + 1
+
+
+def test_a_reconnect_brings_back_counts_and_what_ended() -> None:
+    raw = spec(
+        users={"alice": "pw", "bob": "pw"},
+        links={
+            "bob": {"key": digest("k"), "used": NOW, "spent": 2, "uses": 3},
+            "old": {"key": digest("o"), "used": NOW},
+            "fresh": {"key": digest("f"), "uses": None},
+        },
+        ended=[L("bob"), "nobody"],
+        counts={
+            P("alice"): {"logins": 4, "seen": NOW - 5}, P("bob"): {"logins": 2}, L("old"): {"seen": NOW},
+            L("bob"): {}, "link:nobody": {"logins": 1},
+        },
+    )  # fmt: skip
+    lock, _ = built(raw)
+    assert lock.state()["counts"] == {
+        P("alice"): {"logins": 4, "seen": NOW - 5},
+        P("bob"): {"logins": 2, "seen": None},
+        L("old"): {"logins": 0, "seen": NOW},
+    }
+    alice, bob = lock.entries[P("alice")], lock.entries[L("bob")]
+    assert (alice.logins, alice.seen, alice.told, alice.ended) == (4, NOW - 5, NOW - 5, False)
+    assert (bob.spent, bob.uses, bob.logins, bob.seen, bob.ended) == (2, 3, 0, None, True)
+    assert not lock.entries[P("bob")].ended
+    assert (lock.entries[L("old")].spent, lock.entries[L("old")].uses) == (1, 1)
+    assert (lock.entries[L("fresh")].spent, lock.entries[L("fresh")].uses) == (0, None)
+
+
+def test_a_client_before_0_5_0_ends_logins_by_label() -> None:
+    lock, _ = built(spec(users={"anil": "pw"}, links={"anil": {"key": digest("k")}}, ended=["anil"]))
+    assert all(entry.ended for entry in lock.entries.values())
+
+
+def test_links_minted_with_the_lock_work_as_often_as_asked() -> None:
+    lock, minted = built(spec(mint=[{"label": "a", "uses": 2}, {"label": "b", "uses": None}, {"label": "c"}]))
+    assert [lock.entries[L(label)].uses for label, _ in minted] == [2, None, 1]
+
+
+async def test_a_minted_link_may_share_a_passwords_name_and_work_as_often_as_asked(ctx: ServerContext) -> None:
+    mine = locked_tunnel()
+    ctx.lock(mine, ["foo"], spec(), Changes())
+    bound(ctx, mine, "foo")
+    assert ctx.mint(ALICE, {"url": "foo.example.com", "label": "alice", "uses": 3})["label"] == "alice"
+    assert mine.lock.entries[L("alice")].uses == 3
+    assert ctx.mint(ALICE, {"url": "foo.example.com", "uses": None})["label"] == "link-1"
+    assert mine.lock.entries[L("link-1")].uses is None
+    assert ctx.mint(ALICE, {"url": "foo.example.com", "label": "alice"}) == {
+        "error": "'alice' is taken or can't name a login"
+    }
+    for uses in (0, -1, "2", True):
+        assert ctx.mint(ALICE, {"url": "foo.example.com", "uses": uses}) == {
+            "error": "a link must be usable at least once"
+        }

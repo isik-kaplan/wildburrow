@@ -25,7 +25,8 @@ class LockRequest:
     mint: list[dict[str, Any]] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
     secret: str = field(default_factory=new_secret, repr=False)
-    # The links the server minted and which logins ended, as it last said; sent back on reconnecting.
+    # The links the server minted, which logins ended and how often each was used, as it last said; sent back on
+    # reconnecting.
     state: dict[str, Any] = field(default_factory=lambda: {"links": {}, "ended": []})
     announced: bool = False
 
@@ -35,6 +36,7 @@ class LockRequest:
             "users": self.users,
             "links": self.state["links"],
             "ended": self.state["ended"],
+            "counts": self.state.get("counts", {}),
             "mint": self.mint,
             "settings": self.settings,
         }

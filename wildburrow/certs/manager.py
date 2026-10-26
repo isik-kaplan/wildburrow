@@ -8,6 +8,7 @@ from wildburrow.certs.acme import Issuer
 from wildburrow.certs.store import CertStore
 from wildburrow.core.names import Name, host_labels
 from wildburrow.dns.base import DNSProvider
+from wildburrow.store.record import Recorder
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,10 @@ class CertManager:
         manage_records: bool,
         renew_before: timedelta,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        record: Recorder | None = None,
     ) -> None:
         self.domain = domain
+        self._record = record or Recorder()
         self._store = store
         self._issuer = issuer
         self._dns = dns
@@ -67,7 +70,15 @@ class CertManager:
             await self._dns.ensure_cname(f"*.{parent}", self.domain)
         domains = [f"*.{parent}", parent] if parent == self.domain else [f"*.{parent}"]
         log.info("requesting a certificate for %s", ", ".join(domains))
-        key_pem, chain_pem = await self._issuer.issue(domains)
+        certificate = self._record.certificate_requested(parent)
+        try:
+            key_pem, chain_pem = await self._issuer.issue(domains)
+        except Exception as exc:
+            if certificate is not None:
+                self._record.certificate_finished(certificate, str(exc) or type(exc).__name__)
+            raise
+        if certificate is not None:
+            self._record.certificate_finished(certificate, None)
         self._store.save(parent, key_pem, chain_pem)
         self._contexts.pop(parent, None)
 

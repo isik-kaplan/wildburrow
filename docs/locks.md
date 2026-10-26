@@ -6,7 +6,7 @@ It isn't Basic auth: your app's own cookies and `Authorization` header pass thro
 ## Locking a tunnel
 
 ```sh
-wildburrow 3000 foo '*.foo' --lock alice --lock bob:baz --link 2
+wildburrow 3000 foo '*.foo' --lock alice --lock bob:baz --links 2
 ```
 
 ```
@@ -21,18 +21,22 @@ locked:
 ```
 
 - `--lock USER:PASSWORD` lets USER in with PASSWORD. `--lock USER` asks for the password in a terminal, where an empty
-  answer makes one up, and makes one up without a terminal. `--lock` alone makes up a username and a password.
-- `--link` makes one one-time link, `--link 3` three, and `--link alice,bob` one labelled for each. A link logs its
-  holder in without a password, once. `--link-expires 1h` stops unused links working after an hour.
-- Both repeat and mix. Either one locks the tunnel; with only links, the login page has no form and says to ask for an
-  invite link.
+  answer makes one up, and makes one up without a terminal. `--lock-guest` makes up a username and a password.
+- `--link` makes one one-time link, `--links 3` three, and `--links alice,bob` one labelled for each. A link logs its
+  holder in without a password, once. `--link-expires 1h` stops unused links working after an hour, and
+  `--link-uses 5` lets each link in five times, or `--link-uses any` as often as anyone likes; pair `any` with
+  `--link-expires`.
+- A link may share a password's name, as in `--lock anil --links anil`: both log in as `anil`, and your app can't tell
+  them apart.
+- They repeat and mix. Any of them locks the tunnel; with only links, the login page has no form and says to ask for
+  an invite link.
 - What it prints is the only copy. The server keeps HMACs of the passwords and digests of the links, so a lost link
-  can't be shown again; mint another with `wildburrow link`.
-- `--lock` and `--link` without a value go after the names, or before another option, so they don't take the next
-  word as theirs.
-- `WILDBURROW_LOCK` takes `USER[:PASSWORD]` lines, or `WILDBURROW_LOCK_FILE` a file of them; `WILDBURROW_LINK` and
-  `WILDBURROW_LINK_EXPIRES` stand for `--link` and `--link-expires`. An option wins over its variable.
-- `wildburrow` alone asks whether to lock a tunnel it opens.
+  can't be shown again; mint another with `wildburrow links add`.
+- `WILDBURROW_CLIENT_LOCK` takes `USER[:PASSWORD]` lines, or `WILDBURROW_CLIENT_LOCK_FILE` a file of them;
+  `WILDBURROW_CLIENT_LOCK_GUEST`, `_LINK`, `_LINKS` and `_LINK_EXPIRES` stand for their options. An option wins over its
+  variable.
+- `wildburrow` alone asks whether to lock a tunnel it opens, who may get in, and, if you want to change them, the
+  settings below.
 
 It needs the websocket transport and a 0.4.0 server. The client refuses to start rather than open the tunnel unlocked.
 
@@ -61,8 +65,8 @@ Two people opening the same tunnel log in separately. Each browser keeps its own
 - The login path, `/_wildburrow/login` by default, belongs to the lock on a locked tunnel. An open tunnel passes every
   path to your app.
 
-The server checks the first request on each connection and then passes the connection through. Later requests on it
-come from the same visitor, but may still carry the lock's cookie.
+The server checks every request, each on a kept-alive connection included, so none reaches your app without a login or
+carries the lock's cookie there. A websocket, once open, is passed through as it is.
 
 ## Scripts
 
@@ -75,23 +79,24 @@ The header takes a username and password from `--lock`. Links don't work in it.
 ## More links, and ending them
 
 ```sh
-wildburrow link https://admin.foo.tunnel.example.com/bar     # one more, landing there
-wildburrow link https://foo.tunnel.example.com --as carol --expires 1d
-wildburrow links                                             # who may get in, and who has
-wildburrow links --end bob                                   # ends bob's password or link
+wildburrow links add https://admin.foo.tunnel.example.com/bar     # one more, landing there
+wildburrow links add https://foo.tunnel.example.com --as carol --expires 1d --uses 3
+wildburrow links                                                 # who may get in, and who has
+wildburrow links end bob carol                                   # ends their passwords or links
 ```
 
 ```
 foo, *.foo
-WHO     KIND      USED                         LAST SEEN
-alice   password  2 logins                     2026-10-24 14:40 UTC
-bob     password  -                            -
-link-1  link      used 2026-10-24 14:05 UTC    2026-10-24 14:31 UTC
-link-2  link      unused                       -
+WHO     KIND      STATE    USES  LOGINS  LAST SEEN             EXPIRES
+alice   password  open     -     2       2026-10-24 14:40 UTC  -
+bob     password  open     -     0       -                     -
+link-1  link      used up  1/1   1       2026-10-24 14:31 UTC  -
+link-2  link      open     0/3   0       -                     2026-10-25 14:00 UTC
 ```
 
-They log in the way a tunnel would and reach only tunnels of your own identity. Ending a password or a link logs out
-everyone who logged in with it. `link` and `links` go over websocket, like `tunnels`.
+They log in the way a tunnel would and reach only tunnels of your own identity. Ending a name ends its password and
+its link, logging out everyone who logged in with either. Counts and last-seen times are kept by the client too, so
+they survive a reconnect. `link` and `links` go over websocket, like `tunnels`.
 
 ## How long a login lasts
 
@@ -100,12 +105,13 @@ Until the browser closes, unless `--lock-expires 12h` or the server's `WILDBURRO
 - When the connection drops, the client reconnects with the same lock, so logins and links survive it, and a used
   link stays used.
 - Stopping `wildburrow` and starting it again makes a new lock. That logs everyone out and ends every link.
-- A server restart drops every tunnel and every login.
+- A server restart drops every tunnel for as long as it's down. Each client then reconnects with the same lock, so
+  logins made before it work again, and counts and used links carry on.
 
 ## Settings
 
-The server sets every lock's defaults; a client changes them for its own tunnel. The client also reads its options
-from variables of the same names.
+The server sets every lock's defaults; a client changes them for its own tunnel. The client also reads each option
+from its variable with `CLIENT_` added, as in `WILDBURROW_CLIENT_LOCK_PATH`.
 
 | Client option | Server variable | Default | |
 |---|---|---|---|
@@ -115,9 +121,9 @@ from variables of the same names.
 | `--lock-user-header` | `WILDBURROW_LOCK_USER_HEADER` | `X-Wildburrow-User` | Header telling your app who logged in |
 | `--lock-expires` | `WILDBURROW_LOCK_EXPIRES` | when the browser closes | How long a login lasts |
 | `--[no-]lock-confirm-links` | `WILDBURROW_LOCK_CONFIRM_LINKS` | on | Links wait for a click |
-| `--lock-page FILE` | `WILDBURROW_LOCK_PAGE_FILE` | built in | Login page |
-| `--lock-link-page FILE` | `WILDBURROW_LOCK_LINK_PAGE_FILE` | built in | Page a link opens with |
-| `--lock-message-page FILE` | `WILDBURROW_LOCK_MESSAGE_PAGE_FILE` | built in | Page for the lock's messages |
+| `--lock-page-file FILE` | `WILDBURROW_LOCK_PAGE_FILE` | built in | Login page |
+| `--lock-link-page-file FILE` | `WILDBURROW_LOCK_LINK_PAGE_FILE` | built in | Page a link opens with |
+| `--lock-message-page-file FILE` | `WILDBURROW_LOCK_MESSAGE_PAGE_FILE` | built in | Page for the lock's messages |
 | | `WILDBURROW_LOCK_ATTEMPTS` | `10` | Failed logins a minute on one tunnel before it waits |
 | | `WILDBURROW_LOCK_CODE_EXPIRES` | `10m` | How long a hand-off code is kept unused |
 

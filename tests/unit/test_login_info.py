@@ -11,6 +11,7 @@ from wildburrow.auth.base import Authenticator
 from wildburrow.core.context import ServerContext
 from wildburrow.core.names import Name
 from wildburrow.core.types import Identity, PasswordCredential, PublicKeyCredential, TokenCredential
+from wildburrow.edge.exchange import tagged
 from wildburrow.edge.http import Mode
 from wildburrow.server import Server, client_defaults
 
@@ -46,9 +47,13 @@ BOTH = {"ssh": ["key", "password"], "websocket": ["token", "key", "password"]}
     [
         ({}, BOTH, {"transport": "ssh", "auth": "key"}),
         ({}, {"ssh": [], "websocket": ["token"]}, {"transport": "websocket", "auth": "token"}),
-        ({"client_transport": "websocket"}, BOTH, {"transport": "websocket", "auth": "token"}),
-        ({"client_auth": "password"}, BOTH, {"transport": "ssh", "auth": "password"}),
-        ({"client_transport": "websocket", "client_auth": "key"}, BOTH, {"transport": "websocket", "auth": "key"}),
+        ({"suggested_transport": "websocket"}, BOTH, {"transport": "websocket", "auth": "token"}),
+        ({"suggested_auth": "password"}, BOTH, {"transport": "ssh", "auth": "password"}),
+        (
+            {"suggested_transport": "websocket", "suggested_auth": "key"},
+            BOTH,
+            {"transport": "websocket", "auth": "key"},
+        ),
     ],
 )
 def test_client_defaults(chosen: dict[str, str], offered: dict[str, list[str]], expected: dict[str, str]) -> None:
@@ -60,25 +65,25 @@ def test_client_defaults(chosen: dict[str, str], offered: dict[str, list[str]], 
     [
         ({}, {"ssh": []}, "no WILDBURROW_AUTH plugin works over any of WILDBURROW_TRANSPORTS"),
         (
-            {"client_transport": "websocket"},
+            {"suggested_transport": "websocket"},
             {"ssh": ["key"]},
-            "WILDBURROW_CLIENT_TRANSPORT: 'websocket' isn't one of the transports clients can log in over: ssh",
+            "WILDBURROW_SUGGESTED_TRANSPORT: 'websocket' isn't one of the transports clients can log in over: ssh",
         ),
         (
-            {"client_transport": "carrier-pigeon"},
+            {"suggested_transport": "carrier-pigeon"},
             BOTH,
-            "WILDBURROW_CLIENT_TRANSPORT: 'carrier-pigeon' isn't one of the transports clients can log in over: "
+            "WILDBURROW_SUGGESTED_TRANSPORT: 'carrier-pigeon' isn't one of the transports clients can log in over: "
             "ssh, websocket",
         ),
         (
-            {"client_transport": "ssh"},
+            {"suggested_transport": "ssh"},
             {"ssh": [], "websocket": ["token"]},
-            "WILDBURROW_CLIENT_TRANSPORT: 'ssh' isn't one of the transports clients can log in over: websocket",
+            "WILDBURROW_SUGGESTED_TRANSPORT: 'ssh' isn't one of the transports clients can log in over: websocket",
         ),
         (
-            {"client_auth": "token"},
+            {"suggested_auth": "token"},
             BOTH,
-            "WILDBURROW_CLIENT_AUTH: 'token' doesn't work over ssh, which takes: key, password",
+            "WILDBURROW_SUGGESTED_AUTH: 'token' doesn't work over ssh, which takes: key, password",
         ),
     ],
 )
@@ -133,14 +138,14 @@ async def test_the_published_ssh_port_can_differ_from_the_bound_one(tmp_path: Pa
 
 
 async def test_the_operator_picks_the_defaults(tmp_path: Path, credentials: Credentials) -> None:
-    values = server_env(tmp_path, credentials, CLIENT_TRANSPORT="websocket", CLIENT_AUTH="key")
+    values = server_env(tmp_path, credentials, SUGGESTED_TRANSPORT="websocket", SUGGESTED_AUTH="key")
     async with server(values) as started:
         assert started.info()["defaults"] == {"transport": "websocket", "auth": "key"}
 
 
 def test_a_default_that_cannot_log_in_stops_the_server(tmp_path: Path, credentials: Credentials) -> None:
-    with pytest.raises(config.ConfigError, match="CLIENT_AUTH: 'token' doesn't work over ssh"):
-        server(server_env(tmp_path, credentials, CLIENT_TRANSPORT="ssh", CLIENT_AUTH="token"))
+    with pytest.raises(config.ConfigError, match="SUGGESTED_AUTH: 'token' doesn't work over ssh"):
+        server(server_env(tmp_path, credentials, SUGGESTED_TRANSPORT="ssh", SUGGESTED_AUTH="token"))
 
 
 async def test_nothing_secret_is_published(tmp_path: Path, credentials: Credentials) -> None:
@@ -169,6 +174,7 @@ async def test_any_host_but_a_tunnels_gets_the_document(ctx: ServerContext, host
         f"Content-Length: {len(INFO)}".encode(),
         b"Content-Type: application/json",
         b"Connection: close",
+        b"X-Robots-Tag: noindex, nofollow",
     ]
     assert body == INFO
     assert ctx.root.peers == []
@@ -184,7 +190,7 @@ async def test_a_tunnel_keeps_the_path_for_its_own_app(ctx: ServerContext) -> No
         assert await get(edge.port, f"app.{DOMAIN}", protocol.INFO_PATH) == (404, b"404 Not Found\n")
         ctx.registry.bind(Name(("app",)), tunnel := Bound())
         reply = await http(edge.port, f"GET {protocol.INFO_PATH} HTTP/1.1\r\nHost: app.{DOMAIN}\r\n\r\n".encode())
-    assert reply == REPLY
+    assert reply == tagged(REPLY)
     assert len(tunnel.peers) == 1
 
 
@@ -199,5 +205,5 @@ async def test_only_the_exact_path_is_the_document(ctx: ServerContext) -> None:
     ctx.root = root = Root()
     async with running(ctx) as edge:
         reply = await http(edge.port, f"GET {protocol.INFO_PATH}?x HTTP/1.1\r\nHost: {DOMAIN}\r\n\r\n".encode())
-    assert reply == REPLY
+    assert reply == tagged(REPLY)
     assert len(root.peers) == 1

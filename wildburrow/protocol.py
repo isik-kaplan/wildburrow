@@ -11,6 +11,7 @@ INFO_PATH = "/_wildburrow/info"
 # Where the server's own domain logs visitors in to a locked tunnel with only wildcard names.
 LOCK_PATH = "/_wildburrow/lock/"
 SIGNATURE_NAMESPACE = "wildburrow"
+WEBSOCKET = "websocket"
 EOF_MARKER = "eof"
 READY = "ready: "
 # Printed when the server ends a session on purpose, which the client then doesn't retry.
@@ -18,7 +19,9 @@ ENDED = "closed: "
 # What a server answers beyond 0.2.0, listed in its welcome, and the release that brought each.
 SESSIONS = "sessions"
 LOCK = "lock"
-SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0"}
+INDEX = "index"
+DENY = "deny"
+SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0", INDEX: "0.5.0", DENY: "0.5.0"}
 CLOSE_PROTOCOL_ERROR = 4400
 CLOSE_AUTH_FAILED = 4401
 CLOSE_UNKNOWN_STREAM = 4404

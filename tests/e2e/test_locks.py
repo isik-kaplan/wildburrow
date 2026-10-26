@@ -1,15 +1,20 @@
 import asyncio
+import contextlib
 import html
 import logging
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 import pytest
 
 from tests.conftest import DOMAIN, TIMEOUT, Backend, Credentials, Running, StartServer, http
-from tests.e2e.test_websocket import TOKEN, client_config, local, start_client, stop
+from tests.e2e.test_websocket import TOKEN, client_config, local, raw_control, start_client, stop
+from wildburrow import cli, protocol
 from wildburrow.client import websocket
+from wildburrow.client.config import config_path, write_config
 from wildburrow.client.locking import LockRequest
 from wildburrow.tokens import digest
 
@@ -130,7 +135,8 @@ def fields(page: Reply) -> dict[str, str]:
 
 
 def link_of(lines: list[str], label: str) -> str:
-    return next(line.split()[-1] for line in lines if line.split()[:1] == [label])
+    """The link `label` was printed with, which a password for the same name doesn't have."""
+    return next(line.split()[-1] for line in lines if line.split()[:1] == [label] and "://" in line)
 
 
 async def test_one_login_covers_every_host_of_the_tunnel(
@@ -162,9 +168,11 @@ async def test_a_link_logs_in_once(
     url = link_of(lines, "link-1")
     assert url.startswith(at("foo", "/_wildburrow/login/link/"))
     [key] = [link["key"] for link in lock.state["links"].values()]
+    unused = {"expires": None, "used": None, "spent": 0, "uses": 1}
     assert lock.state == {
-        "links": {"link-1": {"key": key, "host": "", "path": "/", "expires": None, "used": None}},
+        "links": {"link-1": {"key": key, "host": "", "path": "/", **unused}},
         "ended": [],
+        "counts": {},
     }
     friend, preview = Browser(running.http_port), Browser(running.http_port)
     assert (await preview.visit(url)).status == 200
@@ -253,13 +261,13 @@ async def test_ending_a_login_logs_out_whoever_used_it(
         ("alice", 1, False),
         ("bob", 1, False),
     ]
-    ended = await websocket.end_login(config, "bob", connector=local(running))
-    assert ended == {"type": "ended-login", "who": "bob", "ended": [["foo"]]}
+    ended = await websocket.end_logins(config, ["bob"], connector=local(running))
+    assert ended == [{"type": "ended-login", "who": "bob", "ended": [["foo"]]}]
     assert (await alice.visit(at("foo"))).status == 200
     assert (await bob.visit(at("foo"))).status == 401
     again = {"username": "bob", "password": "builder"}
     assert (await bob.visit(at("foo", "/_wildburrow/login"), "POST", again)).status == 401
-    assert lock.state["ended"] == ["bob"]
+    assert lock.state["ended"] == ["password:bob"]
     await stop(task)
 
 
@@ -338,7 +346,7 @@ async def test_a_client_can_dress_its_lock_its_own_way(
     assert page.header("Content-Security-Policy") == "frame-ancestors 'none'"
     reply = await browser.send(at("foo", "/.in"), "POST", {"username": "alice", "password": "wonderland"})
     [cookie] = reply.set_cookies()
-    assert cookie.startswith("pass=alice.")
+    assert cookie.startswith("pass=password:alice.")
     assert cookie.endswith("; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600")
     assert (await browser.visit(at("foo"))).status == 200
     assert b"X-Who: alice" in backend.requests[-1]
@@ -381,3 +389,173 @@ async def test_locking_is_logged(
     _, task, _ = await locked(start_server, credentials, backend, env, ["foo", "*.foo"], lock)
     assert ("wildburrow.transports.websocket", logging.INFO, "ci locked foo, *.foo") in caplog.record_tuples
     await stop(task)
+
+
+async def test_links_add_and_end_reach_a_running_tunnel(
+    start_server: StartServer,
+    credentials: Credentials,
+    backend: Backend,
+    env: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    lock = LockRequest({"alice": "wonderland"})
+    running, task, _ = await locked(start_server, credentials, backend, env, ["foo"], lock)
+    write_config(config_path(), client_config(credentials, "token"))
+    monkeypatch.setattr(websocket, "connect", local(running))
+    assert await asyncio.to_thread(cli.main, ["links", "add", at("foo", "/x"), "--as", "bob"]) == 0
+    label, url = capsys.readouterr().out.split()
+    assert label == "bob"
+    friend = Browser(running.http_port)
+    assert (await friend.visit(url, "POST")).body == b"GET /x HTTP/1.1"
+    assert await asyncio.to_thread(cli.main, ["links", "end", "bob", "alice"]) == 0
+    assert capsys.readouterr().out == "ended bob on foo\nended alice on foo\n"
+    assert (await friend.visit(at("foo"))).status == 401
+    assert sorted(lock.state["ended"]) == ["link:bob", "password:alice"]
+    await stop(task)
+
+
+async def keep_alive(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Answers every request on the connection with its headers, keeping the connection open."""
+    with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
+        while head := await reader.readuntil(b"\r\n\r\n"):
+            body = head.split(b"\r\n", 1)[1]
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+            await writer.drain()
+    writer.close()
+
+
+@contextlib.asynccontextmanager
+async def kept_alive() -> AsyncIterator[tuple[asyncio.Server, Backend]]:
+    app = await asyncio.start_server(keep_alive, "127.0.0.1", 0)
+    async with app:
+        yield app, Backend(app.sockets[0].getsockname()[1])
+        app.close_clients()
+
+
+async def test_every_request_on_a_connection_goes_through_the_lock(
+    start_server: StartServer, credentials: Credentials, env: dict[str, str]
+) -> None:
+    async with kept_alive() as (app, local):
+        lock = LockRequest({"alice": "wonderland"})
+        running, task, _ = await locked(start_server, credentials, local, env, ["app"], lock)
+        browser = Browser(running.http_port)
+        form = {"username": "alice", "password": "wonderland", "to": "/"}
+        # Sent, not followed: the app this test runs keeps every connection open.
+        await browser.send(at("app", "/_wildburrow/login"), "POST", form)
+        [(name, value)] = browser.jar[f"app.{DOMAIN}"].items()
+        host = f"Host: app.{DOMAIN}"
+        logged_in = f"GET / HTTP/1.1\r\n{host}\r\nCookie: {name}={value}\r\n\r\n"
+        stranger = f"GET /secret HTTP/1.1\r\n{host}\r\n\r\n"
+        reply = await http(running.http_port, (logged_in + logged_in + stranger).encode())
+        app.close_clients()
+        await stop(task)
+    first, second, third = reply.split(b"HTTP/1.1 ")[1:]
+    for answered in (first, second):
+        assert answered.startswith(b"200 OK\r\n")
+        assert b"X-Wildburrow-User: alice" in answered
+        assert name.encode() not in answered
+    assert third.startswith(b"401 Unauthorized\r\n")
+    assert b"/secret" not in first + second
+
+
+async def test_logging_in_later_on_a_connection_reads_the_form(
+    start_server: StartServer, credentials: Credentials, env: dict[str, str]
+) -> None:
+    async with kept_alive() as (_app, local):
+        await logging_in_later(start_server, credentials, local, env)
+
+
+async def logging_in_later(
+    start_server: StartServer, credentials: Credentials, local: Backend, env: dict[str, str]
+) -> None:
+    lock = LockRequest({"alice": "wonderland"})
+    running, task, _ = await locked(start_server, credentials, local, env, ["app"], lock)
+    form = urlencode({"username": "alice", "password": "wonderland", "to": "/"}).encode()
+    host = f"Host: app.{DOMAIN}"
+    page = f"GET /_wildburrow/login HTTP/1.1\r\n{host}\r\n\r\n".encode()
+    login = (
+        f"POST /_wildburrow/login HTTP/1.1\r\n{host}\r\nContent-Type: application/x-www-form-urlencoded\r\n"
+        f"Content-Length: {len(form)}\r\n\r\n"
+    ).encode()
+    assert (await http(running.http_port, page + login + form)).split(b"\r\n", 1)[0] == b"HTTP/1.1 401 Unauthorized"
+    reader, writer = await asyncio.open_connection("127.0.0.1", running.http_port)
+    writer.write(f"GET / HTTP/1.1\r\n{host}\r\nX-Wildburrow-Auth: alice:wonderland\r\n\r\n".encode() + login + form)
+    async with asyncio.timeout(TIMEOUT):
+        reply = await reader.read()
+    writer.close()
+    first, second = reply.split(b"HTTP/1.1 ")[1:]
+    assert first.startswith(b"200 OK\r\n")
+    assert second.startswith(b"303 See Other\r\n")
+    reader, writer = await asyncio.open_connection("127.0.0.1", running.http_port)
+    writer.write(f"GET / HTTP/1.1\r\n{host}\r\nX-Wildburrow-Auth: alice:wonderland\r\n\r\n".encode() + login + b"cut")
+    writer.write_eof()
+    async with asyncio.timeout(TIMEOUT):
+        assert (await reader.read()).count(b"HTTP/1.1 ") == 1
+    writer.close()
+    await stop(task)
+
+
+async def test_a_name_logs_in_by_password_or_by_a_link_used_as_often_as_it_may(
+    start_server: StartServer, credentials: Credentials, backend: Backend, env: dict[str, str]
+) -> None:
+    lock = LockRequest({"anil": "pw"}, mint=[{"label": "anil", "expires": None, "uses": 2}])
+    running, task, lines = await locked(start_server, credentials, backend, env, ["foo"], lock)
+    url = link_of(lines, "anil")
+    for _ in range(2):
+        assert (await Browser(running.http_port).visit(url, "POST")).body == b"GET / HTTP/1.1"
+        assert b"X-Wildburrow-User: anil" in backend.requests[-1]
+    assert (await Browser(running.http_port).visit(url)).status == 410
+    form = {"username": "anil", "password": "pw", "to": "/x"}
+    assert (await Browser(running.http_port).visit(at("foo", "/_wildburrow/login"), "POST", form)).status == 200
+    assert b"X-Wildburrow-User: anil" in backend.requests[-1]
+    [listed] = await websocket.logins(client_config(credentials, "token"), connector=local(running))
+    assert [(entry["who"], entry["kind"], entry["logins"], entry["spent"]) for entry in listed["logins"]] == [
+        ("anil", "password", 1, 0),
+        ("anil", "link", 2, 2),
+    ]
+    await stop(task)
+
+
+async def test_logins_survive_a_server_restart_and_keep_their_counts(
+    start_server: StartServer, credentials: Credentials, backend: Backend, env: dict[str, str]
+) -> None:
+    lock = LockRequest({"alice": "wonderland"})
+    running, task, _ = await locked(start_server, credentials, backend, env, ["foo"], lock)
+    alice = Browser(running.http_port)
+    form = {"username": "alice", "password": "wonderland", "to": "/"}
+    assert (await alice.visit(at("foo", "/_wildburrow/login"), "POST", form)).status == 200
+    async with asyncio.timeout(TIMEOUT):
+        while "password:alice" not in lock.state["counts"]:
+            await asyncio.sleep(0.01)
+    await stop(task)
+    ports = {"WILDBURROW_HTTP_PORT": str(running.http_port)}
+    await running.server.__aexit__(None, None, None)
+    running = await start_server(**env, **ports)
+    # The client brings its lock back with the same secret, so the cookie it vouched for still opens the tunnel.
+    task, out = start_client(running, client_config(credentials, "token"), backend.port, ["foo"], lock=lock)
+    await out.wait_for("ready:")
+    assert (await alice.visit(at("foo", "/back"))).body == b"GET /back HTTP/1.1"
+    [listed] = await websocket.logins(client_config(credentials, "token"), connector=local(running))
+    [entry] = listed["logins"]
+    assert (entry["who"], entry["logins"]) == ("alice", 1)
+    assert entry["seen"] is not None
+    await stop(task)
+
+
+async def test_a_refused_locked_bind_leaves_the_connection_free_to_lock_again(
+    start_server: StartServer, credentials: Credentials, env: dict[str, str]
+) -> None:
+    running = await start_server(**env)
+    spec = LockRequest({"alice": "wonderland"}).spec()
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="token", token=TOKEN))
+        assert protocol.decode(await ws.recv())["type"] == "welcome"
+        await ws.send(protocol.encode("bind", names=["-bad"], lock=spec))
+        assert protocol.decode(await ws.recv())["type"] == "rejected"
+        assert running.server.ctx.locks == {}
+        await ws.send(protocol.encode("bind", names=["foo"], lock=spec))
+        kinds = [protocol.decode(await ws.recv())["type"] for _ in range(2)]
+        assert kinds == ["bound", "locked"]

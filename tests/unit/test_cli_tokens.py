@@ -49,7 +49,7 @@ async def checks(credentials: Credentials, token: str) -> bool:
 async def test_mints_a_token_the_server_accepts(
     logged_in: ClientConfig, credentials: Credentials, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["token", "alice", "--names", "alice,*.alice", "--yes"]) == 0
+    assert cli.main(["tokens", "new", "alice", "--names", "alice,*.alice", "--yes"]) == 0
     out = capsys.readouterr().out
     grant = tokens.decode(minted(out))[0]
     assert grant.names == ("alice", "*.alice")
@@ -68,13 +68,13 @@ async def test_mints_a_token_the_server_accepts(
     ("expires", "seconds"), [("30m", 1800), ("12h", 43200), ("2d", 172800), ("1w", 604800), (" 3D ", 259200)]
 )
 def test_expiry_units(logged_in: ClientConfig, capsys: pytest.CaptureFixture[str], expires: str, seconds: int) -> None:
-    assert cli.main(["token", "a", "--names", "any", "--expires", expires, "-y"]) == 0
+    assert cli.main(["tokens", "new", "a", "--names", "any", "--expires", expires, "-y"]) == 0
     grant = tokens.decode(minted(capsys.readouterr().out))[0]
     assert grant.expires == pytest.approx(time.time() + seconds, abs=5)
 
 
 def test_a_token_that_never_expires(logged_in: ClientConfig, capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["token", "a", "--names", "any", "--expires", "NEVER", "-y"]) == 0
+    assert cli.main(["tokens", "new", "a", "--names", "any", "--expires", "NEVER", "-y"]) == 0
     out = capsys.readouterr().out
     assert tokens.decode(minted(out))[0].expires is None
     assert out.startswith("token for a, valid until never, for: any name\n")
@@ -94,14 +94,14 @@ def test_a_token_that_never_expires(logged_in: ClientConfig, capsys: pytest.Capt
 def test_minting_refuses_what_it_cannot_sign(
     logged_in: ClientConfig, capsys: pytest.CaptureFixture[str], args: list[str], message: str
 ) -> None:
-    assert cli.main(["token", "a", *args, "-y"]) == 2
+    assert cli.main(["tokens", "new", "a", *args, "-y"]) == 2
     assert capsys.readouterr().err.startswith(message)
     assert not tokens_cli.log_path().exists()
 
 
 def test_asks_before_minting(logged_in: ClientConfig, typed: Typist, capsys: pytest.CaptureFixture[str]) -> None:
     typed("y", ENTER)
-    assert cli.main(["token", "alice", "--names", "alice"]) == 0
+    assert cli.main(["tokens", "new", "alice", "--names", "alice"]) == 0
     out = capsys.readouterr().out
     grant = tokens.decode(minted(out))[0]
     assert out.startswith(
@@ -115,7 +115,7 @@ def test_warns_harder_about_a_token_that_never_expires(
     logged_in: ClientConfig, typed: Typist, capsys: pytest.CaptureFixture[str]
 ) -> None:
     typed("n", ENTER)
-    assert cli.main(["token", "alice", "--names", "alice", "--expires", "never"]) == 1
+    assert cli.main(["tokens", "new", "alice", "--names", "alice", "--expires", "never"]) == 1
     assert capsys.readouterr().out == (
         "alice gets a token for alice that never expires.\n"
         f"Only rotating the signer key or adding its id to {PREFIX}AUTH_TOKEN_DENY will ever stop it.\n"
@@ -125,7 +125,7 @@ def test_warns_harder_about_a_token_that_never_expires(
 
 def test_declining_is_the_default(logged_in: ClientConfig, typed: Typist) -> None:
     typed(ENTER)
-    assert cli.main(["token", "alice", "--names", "alice"]) == 1
+    assert cli.main(["tokens", "new", "alice", "--names", "alice"]) == 1
     assert typed.showed("? Mint it? No")
     assert not tokens_cli.log_path().exists()
 
@@ -133,7 +133,7 @@ def test_declining_is_the_default(logged_in: ClientConfig, typed: Typist) -> Non
 def test_without_a_terminal_it_needs_yes(
     logged_in: ClientConfig, no_terminal: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["token", "alice", "--names", "alice"]) == 2
+    assert cli.main(["tokens", "new", "alice", "--names", "alice"]) == 2
     assert capsys.readouterr().err == (
         "pass --yes to mint a token without being asked; it can't be withdrawn once minted\n"
     )
@@ -142,7 +142,18 @@ def test_without_a_terminal_it_needs_yes(
 def test_server_and_key_can_be_given(
     credentials: Credentials, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    args = ["token", "a", "--names", "any", "-y", "--server", "other.example.com", "--identity", str(credentials.key)]
+    args = [
+        "tokens",
+        "new",
+        "a",
+        "--names",
+        "any",
+        "-y",
+        "--server",
+        "other.example.com",
+        "--identity",
+        str(credentials.key),
+    ]
     assert cli.main(args) == 0
     assert "  wildburrow login other.example.com --auth token --token " in capsys.readouterr().out
 
@@ -150,7 +161,7 @@ def test_server_and_key_can_be_given(
 def test_without_a_server_it_says_where_the_name_goes(
     credentials: Credentials, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["token", "a", "--names", "any", "-y", "--identity", str(credentials.key)]) == 0
+    assert cli.main(["tokens", "new", "a", "--names", "any", "-y", "--identity", str(credentials.key)]) == 0
     out, err = capsys.readouterr()
     assert "  wildburrow login SERVER --auth token --token " in out
     assert err == "\nno saved login to name the server: replace SERVER, or pass --server\n"
@@ -166,7 +177,7 @@ def test_the_log_lives_in_the_state_directory(home: Path, monkeypatch: pytest.Mo
 def test_a_token_is_expired_from_its_expiry_on(
     logged_in: ClientConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cli.main(["token", "alice", "--names", "alice", "-y"])
+    cli.main(["tokens", "new", "alice", "--names", "alice", "-y"])
     expires = json.loads(tokens_cli.log_path().read_text())["expires"]
     capsys.readouterr()
     for now, state in [(expires - 1, when(expires)), (expires, f"expired {when(expires)}")]:
@@ -178,17 +189,17 @@ def test_a_token_is_expired_from_its_expiry_on(
 def test_signing_failures_are_reported(
     logged_in: ClientConfig, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(["token", "a", "--names", "any", "-y", "--identity", str(tmp_path / "missing")]) == 1
+    assert cli.main(["tokens", "new", "a", "--names", "any", "-y", "--identity", str(tmp_path / "missing")]) == 1
     assert capsys.readouterr().err.startswith("ssh-keygen could not sign: ")
 
 
 def test_without_any_key_it_says_so(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["token", "a", "--names", "any", "-y"]) == 1
+    assert cli.main(["tokens", "new", "a", "--names", "any", "-y"]) == 1
     assert capsys.readouterr().err == "no SSH key found; set one with `wildburrow login --identity PATH`\n"
 
 
 def test_hashed_tokens_still_mint(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["token", "ci", "--hash"]) == 0
+    assert cli.main(["tokens", "new", "ci", "--hash"]) == 0
     token_line, server_line = capsys.readouterr().out.splitlines()
     token = token_line.removeprefix("token (give this to the client): ")
     assert server_line == f"server line (add to {PREFIX}AUTH_TOKEN_HASHES): ci:{tokens.digest(token)}"
@@ -197,8 +208,8 @@ def test_hashed_tokens_still_mint(capsys: pytest.CaptureFixture[str]) -> None:
 def test_every_mint_is_logged_privately_without_the_token(
     logged_in: ClientConfig, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cli.main(["token", "alice", "--names", "alice", "-y"])
-    cli.main(["token", "bob", "--names", "any", "--expires", "never", "-y", "--server", "b.example.com"])
+    cli.main(["tokens", "new", "alice", "--names", "alice", "-y"])
+    cli.main(["tokens", "new", "bob", "--names", "any", "--expires", "never", "-y", "--server", "b.example.com"])
     out = capsys.readouterr().out
     path = tokens_cli.log_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -215,8 +226,8 @@ def test_every_mint_is_logged_privately_without_the_token(
 def test_tokens_lists_what_was_minted_here(logged_in: ClientConfig, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["tokens"]) == 0
     assert capsys.readouterr().out == "no tokens minted on this machine\n"
-    cli.main(["token", "alice", "--names", "alice,*.alice", "-y"])
-    cli.main(["token", "bob", "--names", "any", "--expires", "never", "-y"])
+    cli.main(["tokens", "new", "alice", "--names", "alice,*.alice", "-y"])
+    cli.main(["tokens", "new", "bob", "--names", "any", "--expires", "never", "-y"])
     log = tokens_cli.log_path()
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     entries.append(entries[0] | {"id": "0" * 16, "name": "carol", "expires": 1_000_000_000, "server": ""})
@@ -243,7 +254,7 @@ def test_names_lists_what_the_server_has_bound(
         return [{"name": "pic", "yours": False}, {"name": "*.mine", "yours": True}, {"name": "mine", "yours": True}]
 
     monkeypatch.setattr(websocket, "held_names", held)
-    monkeypatch.setenv(f"{PREFIX}TOKEN", "from-env")
+    monkeypatch.setenv(client_cli.TOKEN_ENV, "from-env")
     assert cli.main(["names"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "NAME    HOLDER",
@@ -290,3 +301,33 @@ def test_expiry_is_shown_in_utc_whatever_the_local_zone(monkeypatch: pytest.Monk
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+def test_minting_needs_a_name_without_a_terminal(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["tokens", "new"]) == 2
+    assert capsys.readouterr().err.splitlines()[-1] == "Error: Missing argument 'NAME'."
+
+
+@pytest.mark.parametrize(
+    ("answer", "code", "out", "err"),
+    [
+        ({"tokens": ["a", "b"], "ended": []}, 0, "denied a\ndenied b\n", ""),
+        ({"tokens": ["a"], "ended": ["s1", "s2"]}, 0, "denied a\nended 2 of their sessions\n", ""),
+        ({"error": "only an admin can deny tokens"}, 1, "", "only an admin can deny tokens\n"),
+    ],
+)
+def test_deny_says_what_it_did(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], answer: dict, code: int, out: str, err: str
+) -> None:
+    asked: list[tuple[str, list[str]]] = []
+
+    async def deny(config: ClientConfig, ids: list[str], ask: object) -> dict:
+        asked.append((config.server, list(ids)))
+        return answer
+
+    write_config(config_path(), ClientConfig("s.example.com", transport="websocket", auth="token", token="t"))
+    monkeypatch.setattr(websocket, "deny", deny)
+    assert cli.main(["tokens", "deny", "a", "b"]) == code
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == (out, err)
+    assert asked == [("s.example.com", ["a", "b"])]

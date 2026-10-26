@@ -90,6 +90,6 @@ The server answers `GET /_wildburrow/info` on its own domain, or any host that i
 `wildburrow login` starts from it. Nothing secret is in it: no keys, hashes or token names.
 
 - The default transport is the first in `WILDBURROW_TRANSPORTS` any auth method works over, and its auth method the
-  first in `WILDBURROW_AUTH` order. `WILDBURROW_CLIENT_TRANSPORT` and `WILDBURROW_CLIENT_AUTH` choose them instead; one
+  first in `WILDBURROW_AUTH` order. `WILDBURROW_SUGGESTED_TRANSPORT` and `WILDBURROW_SUGGESTED_AUTH` choose them instead; one
   that can't log anyone in stops the server from starting.
 - `WILDBURROW_SSH_PUBLIC_PORT` is the SSH port to publish when it differs from the one bound, as with `-p 2200:2222`.

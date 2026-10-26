@@ -214,8 +214,8 @@ def test_install_asks_in_a_terminal(root: Path, typed: Typist, home: Path, capsy
         "? Transports ssh: clients connect on port 2222",
         f"? An authorized_keys file to copy them from {home / '.ssh/authorized_keys'}",
         "? Admins signers: keys that also sign tokens",
-        "? Sessions people see own: only their own",
-        "? Sessions people can end own: only their own",
+        "? Sessions people see admins: their own, and admins anyone's who isn't an admin",
+        "? Sessions people can end admins: their own, and admins anyone's who isn't an admin",
         "? Save these and start the server? Yes",
     )
 
@@ -279,7 +279,7 @@ def test_install_answers_are_checked(root: Path, typed: Typist, home: Path, tmp_
 
 
 def test_install_asks_who_sees_and_ends_sessions(root: Path, typed: Typist) -> None:
-    typed(DOMAIN, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, DOWN, DOWN, ENTER, DOWN, DOWN, ENTER, ENTER)
+    typed(DOMAIN, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, DOWN, ENTER, DOWN, ENTER, ENTER)
     assert cli.main(["service", "install"]) == 0
     assert settings(root) == {
         f"{P}DOMAIN": DOMAIN,
@@ -297,11 +297,11 @@ def test_install_asks_who_sees_and_ends_sessions(root: Path, typed: Typist) -> N
 
 
 def test_ending_is_offered_only_as_far_as_seeing(root: Path, typed: Typist) -> None:
-    install(root, "--see=admins", "--kick=admins", "--admins=key,key:laptop")
-    typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER, ENTER)
+    install(root, "--see=own", "--kick=own", "--admins=key,key:laptop")
+    typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, DOWN, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert settings(root)[f"{P}ADMINS"] == "key,key:laptop"
-    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("all", "admins")
+    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("all", "own")
     assert typed.showed("? Admins key,key:laptop")
     install(root, "--force", "--see=all", "--kick=all")
     typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER, ENTER)
@@ -311,18 +311,21 @@ def test_ending_is_offered_only_as_far_as_seeing(root: Path, typed: Typist) -> N
 
 
 def test_edit_drops_what_goes_back_to_its_default(root: Path, typed: Typist) -> None:
-    install(root, "--see=admins", "--admins=key")
+    install(root, "--see=all", "--admins=key")
     typed(ENTER, ENTER, ENTER, ENTER, DOWN, DOWN, ENTER, *[DOWN] * 3, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
     assert {f"{P}ADMINS", f"{P}SEE", f"{P}KICK"} & set(settings(root)) == set()
-    assert typed.showed("? Admins signers: keys that also sign tokens", "? Sessions people see own: only their own")
+    assert typed.showed(
+        "? Admins signers: keys that also sign tokens",
+        "? Sessions people see admins: their own, and admins anyone's who isn't an admin",
+    )
 
 
 def test_edit_keeps_what_was_kept_from_the_defaults(root: Path, typed: Typist) -> None:
-    install(root, "--see=admins")
+    install(root, "--see=all")
     typed(ENTER, ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
-    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("admins", "admins")
+    assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("all", "all")
     assert f"{P}ADMINS" not in settings(root)
 
 

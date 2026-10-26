@@ -137,10 +137,10 @@ async def test_responses_stream_without_buffering(
     async def events(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await reader.readuntil(b"\r\n\r\n")
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
-        writer.write(b"e\r\ndata: first\n\n\r\n")
+        writer.write(b"d\r\ndata: first\n\n\r\n")
         await writer.drain()
         await first_seen.wait()
-        writer.write(b"f\r\ndata: second\n\n\r\n0\r\n\r\n")
+        writer.write(b"e\r\ndata: second\n\n\r\n0\r\n\r\n")
         await writer.drain()
         writer.close()
 
