@@ -7,7 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from tests.unit.test_certs import NOW, self_signed
@@ -370,6 +370,8 @@ def split(data: bytes, cuts: list[int]) -> list[bytes]:
     trailers=st.lists(st.from_regex(rb"[A-Za-z]{1,8}: [a-z]{0,8}", fullmatch=True), max_size=2),
     cuts=st.lists(st.integers(min_value=0, max_value=400), max_size=12),
 )
+# A chunk holding an empty line, which only its size keeps from reading as the end of the trailers.
+@example(chunks=[b"\r\n\r\n"], trailers=[], cuts=[])
 def test_chunked_bodies_come_through_whole_however_they_are_split(
     chunks: list[bytes], trailers: list[bytes], cuts: list[int]
 ) -> None:
