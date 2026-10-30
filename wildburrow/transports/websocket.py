@@ -17,7 +17,7 @@ from wildburrow.core.errors import BindRejected, TunnelUnavailable
 from wildburrow.core.indexing import Indexing
 from wildburrow.core.locks import Lock
 from wildburrow.core.names import Name
-from wildburrow.core.sessions import Session
+from wildburrow.core.sessions import Session, same
 from wildburrow.core.types import (
     Credential,
     Identity,
@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 # Each command a session may send, and the type of the answer it gets.
 ANSWERS = {
     "names": "names", protocol.SESSIONS: protocol.SESSIONS, "kick": "kicked", "logins": "logins", "link": "linked",
-    "end-login": "ended-login", protocol.DENY: "denied",
+    "end-login": "ended-login", protocol.DENY: "denied", protocol.USERS: "users", "invite": "invited",
+    "set-admin": "admin-set", "remove-user": "removed-user",
 }  # fmt: skip
 # What a client from 0.5.0 says of itself in its hello.
 CLIENT_FIELDS = ("version", "platform")
@@ -41,6 +42,10 @@ NEVER_INDEXED = "this server keeps every tunnel out of search engines, so it sta
 MAX_REASON = 100
 NONCE_BYTES = 32
 STREAM_ID_BYTES = 24
+
+
+class Joined(Exception):
+    """The connection set up an invite's login instead of logging in, and is done."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +193,9 @@ class WebSocketTransport:
                 identity, client = await self._login(connection, peer)
         except ConnectionClosed:
             return
+        except Joined:
+            await connection.close()
+            return
         except (ProtocolError, ValueError, KeyError, TimeoutError) as exc:
             await connection.close(protocol.CLOSE_PROTOCOL_ERROR, close_reason(exc))
             return
@@ -209,7 +217,7 @@ class WebSocketTransport:
                     await self._bind(outbox, tunnel, message, bound)
                 elif message["type"] in ANSWERS:
                     command = self._ctx.record.command(session, message["type"], message)
-                    answer = self._answer(session, message, command)
+                    answer = await self._answer(session, message, command)
                     outbox.put(ANSWERS[message["type"]], **answer)
                     self._ctx.record.answered(command, recorded(answer))
                 elif message["type"] == "open-failed":
@@ -227,13 +235,15 @@ class WebSocketTransport:
             self._ctx.unlock(tunnel)
             await outbox.flush_and_stop()
 
-    def _answer(self, session: Session, message: dict[str, Any], command: int | None) -> dict[str, Any]:
+    async def _answer(self, session: Session, message: dict[str, Any], command: int | None) -> dict[str, Any]:
         """What `session` is told in answer to one of its commands, recorded as `command`."""
         identity = session.identity
         match message["type"]:
             case "names":
                 held = self._ctx.registry.holders().items()
-                return {"names": [{"name": str(name), "yours": holder.identity == identity} for name, holder in held]}
+                return {
+                    "names": [{"name": str(name), "yours": same(holder.identity, identity)} for name, holder in held]
+                }
             case protocol.SESSIONS:
                 return {"sessions": self._ctx.listing(session), "reach": self._ctx.reach(session)}
             case "kick":
@@ -244,6 +254,14 @@ class WebSocketTransport:
                 return self._ctx.mint(identity, message, command)
             case "end-login":
                 return self._ctx.end_login(identity, str(message["who"]))
+            case protocol.USERS:
+                return await self._ctx.user_listing(session)
+            case "invite":
+                return await self._ctx.invite(session, message, command)
+            case "set-admin":
+                return await self._ctx.set_admin(session, message, command)
+            case "remove-user":
+                return await self._ctx.remove_user(session, message, command)
             case _:
                 return self._ctx.deny(session, [str(token) for token in message["tokens"]], command)
 
@@ -283,6 +301,9 @@ class WebSocketTransport:
     async def _login(self, connection: ServerConnection, peer: Peer) -> tuple[Identity | None, dict[str, Any]]:
         """Who the hello logs in as, and what the client says of itself in it."""
         hello = protocol.decode(await connection.recv())
+        if hello["type"] == protocol.JOIN:
+            await connection.send(protocol.encode("joined", **await self._ctx.join(hello, protocol.WEBSOCKET, peer)))
+            raise Joined
         if hello["type"] != "hello":
             raise ProtocolError("expected hello")
         credential: Credential
@@ -316,7 +337,10 @@ class WebSocketTransport:
 
 
 def recorded(answer: dict[str, Any]) -> dict[str, Any]:
-    """`answer` as the record keeps it: a link's URL cut down to where it lands, so the record can't open it."""
+    """`answer` as the record keeps it: a link's URL cut down to where it lands, and no invite's code, so the record
+    can't open the one or use the other."""
+    if "code" in answer:
+        return {key: value for key, value in answer.items() if key != "code"}
     if "url" in answer:
         head, sep, _ = str(answer["url"]).partition("/link/")
         return {**answer, "url": head + sep}

@@ -3,6 +3,7 @@ import getpass
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
@@ -756,3 +757,56 @@ async def test_denying_needs_a_server_that_denies() -> None:
         "type": "denied", "tokens": ["t"], "ended": ["s1"],
     }  # fmt: skip
     assert answered.sent[1] == {"type": "deny", "tokens": ["t"]}
+
+
+async def test_joining_sends_the_invite_before_any_login() -> None:
+    control = FakeControl([protocol.encode("joined", name="carol")])
+    config = ClientConfig("s", url="http://s")
+    assert await websocket.join(config, {"code": "wbi_x", "password": "pw"}, fake_connector(control)) == "carol"
+    assert control.sent == [{"type": "join", "code": "wbi_x", "password": "pw"}]
+
+
+@pytest.mark.parametrize(
+    ("control", "message"),
+    [
+        (FakeControl([protocol.encode("joined", error="that invite can't be used")]), "that invite can't be used"),
+        (
+            Refused(Close(protocol.CLOSE_PROTOCOL_ERROR, "expected hello")),
+            "s takes no invites; it needs 0.6.0 or later",
+        ),
+        (
+            Refused(Close(1011, "oops")),
+            "s closed the connection: received 1011 (internal error) oops; no close frame sent",
+        ),
+        (Refused(None), "s closed the connection: no close frame received or sent"),
+    ],
+)
+async def test_a_join_that_doesnt_happen_says_why(control: FakeControl, message: str) -> None:
+    with pytest.raises(ClientError) as error:
+        await websocket.join(ClientConfig("s", url="http://s"), {"code": "wbi_x"}, fake_connector(control))
+    assert str(error.value) == message
+
+
+@pytest.mark.parametrize(
+    ("call", "args", "sent"),
+    [
+        (websocket.users, (), (protocol.USERS, "users", {})),
+        (websocket.invite, ("carol", None), ("invite", "invited", {"name": "carol"})),
+        (websocket.invite, ("carol", 60), ("invite", "invited", {"name": "carol", "expires": 60})),
+        (websocket.set_admin, ("carol", True), ("set-admin", "admin-set", {"name": "carol", "admin": True})),
+        (websocket.remove_user, ("carol",), ("remove-user", "removed-user", {"name": "carol"})),
+    ],
+)
+async def test_managing_users_asks_a_server_new_enough_for_it(
+    monkeypatch: pytest.MonkeyPatch, call: Callable, args: tuple, sent: tuple
+) -> None:
+    asked: list[tuple] = []
+
+    async def ask_server(*args: Any, **fields: Any) -> dict[str, Any]:
+        asked.append((*args, fields))
+        return {}
+
+    monkeypatch.setattr(websocket, "ask_server", ask_server)
+    config = ClientConfig("s")
+    assert await call(config, *args, input, print) == {}
+    assert asked == [(config, *sent[:2], input, print, protocol.USERS, sent[2])]

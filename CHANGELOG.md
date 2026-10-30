@@ -7,13 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Users, and invites.** Everyone who logs in is a user. `wildburrow users invite NAME` gives an admin a one-time code;
+  the person runs `wildburrow join SERVER CODE` to set their own password, SSH key, or both, and an alias to log in
+  under. `wildburrow users` lists everyone, `users promote` and `users demote` make an invited user an admin or not,
+  and `users remove` ends their logins and sessions. The settings' users stay the settings': they can't be invited,
+  changed or removed from the database, and a name is either the settings' or the database's. Kept in
+  `WILDBURROW_DATABASE`; the server and these commands warn when it's in memory. See [docs/users.md](docs/users.md).
+- **Every change to who may log in is recorded as an event**, with who made it and from where: users, their keys,
+  invites, which user an identity is, and token denials, in `<table>_events`, written by triggers so a hand edit to
+  the file shows up too, with no one behind it. No password hash or invite code is ever copied.
+
 ### Changed
 
 - **Each password user has their own password.** `WILDBURROW_AUTH_PASSWORD_HASH`, one password anyone could log in
   with under any name, is gone: `WILDBURROW_AUTH_PASSWORD_USERS` takes a `name:argon2hash` line per user, and a
   password logs in only its own user. `wildburrow passwords hash NAME` prints the line. Each user is now their own
-  identity, for `tunnels`, `kick` and links, and `WILDBURROW_ADMINS` takes `password:NAME`. A server set up with
-  `WILDBURROW_AUTH_PASSWORD_HASH` won't start until it has `WILDBURROW_AUTH_PASSWORD_USERS` instead.
+  identity, for `tunnels`, `kick` and links, and `WILDBURROW_ADMINS` takes `password:NAME`. A server still given
+  `WILDBURROW_AUTH_PASSWORD_HASH` won't start, saying what to use instead.
+- **A key's comment names its user and device**: `isik@laptop` and `isik@phone` are both `isik`, so they see and end
+  each other's sessions, links and tunnels as their own. Each key still logs in, and is listed, as itself, and
+  `WILDBURROW_ADMINS=key:isik` makes every key of `isik`'s an admin.
+- **Your own means your user's**, whichever of their keys, tokens or password they logged in with.
+- **The database's schema is 2.** A file from 0.5.0 is brought up to date when the server opens it.
 
 ## [0.5.0] - 2026-10-26
 

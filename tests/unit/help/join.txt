@@ -1,0 +1,13 @@
+Usage: wildburrow join [OPTIONS] SERVER CODE
+
+  Join SERVER with the CODE an admin invited you with.
+
+  Sets up your password, your key or both, and saves the login as `wildburrow login` does.
+
+Options:
+  --key PATH                  log in with this SSH key too: the private key's path (default: no
+                              key)
+  --password / --no-password  set a password, asked twice (default: yes)
+  --alias NAME                a second name to log in with (default: none)
+  --device NAME               what the key is on, as admins see it (default: the key's comment)
+  -h, --help                  Show this message and exit.

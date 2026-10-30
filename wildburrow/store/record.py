@@ -3,6 +3,7 @@
 import json
 import logging
 import zlib
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from wildburrow.core.types import Identity, Peer
@@ -26,8 +27,11 @@ DENIED = "SELECT id FROM tokens WHERE revoked_at IS NOT NULL"
 RUN = "INSERT INTO runs (id, version, hostname, domain, settings, started_at) VALUES (?, ?, ?, ?, ?, ?)"
 RUN_STOPPED = "UPDATE runs SET stopped_at = ? WHERE id = ?"
 LOG = "INSERT INTO logs (run_id, at, level, logger, message) VALUES (?, ?, ?, ?, ?)"
-IDENTITY = "INSERT INTO identities (id, method, subject, name, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)"
-IDENTITY_SEEN = "UPDATE identities SET name = ?, last_seen_at = ? WHERE id = ?"
+IDENTITY = (
+    "INSERT INTO identities (id, method, subject, name, user_id, first_seen_at, last_seen_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+)
+IDENTITY_SEEN = "UPDATE identities SET name = ?, user_id = ?, last_seen_at = ? WHERE id = ?"
 GRANT_USED = (
     "INSERT INTO tokens (id, identity_id, name, names, expires_at, first_used_at, last_used_at) "
     "VALUES (?, ?, ?, ?, ?, ?, ?) "
@@ -97,6 +101,15 @@ CERTIFICATE_FINISHED = "UPDATE certificates SET finished_at = ?, ok = ?, error =
 DNS_CHANGE = "INSERT INTO dns_changes (run_id, at, action, record, value, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?)"
 
 
+# What a login records itself as, among the events.
+LOGGED_IN = {"by": "login"}
+
+
+def acting(identity: Identity) -> dict[str, Any]:
+    """Who an event is a change by: the user, and which of their identities."""
+    return {"user": identity.user, "identity": identity.subject, "method": identity.method}
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
@@ -118,6 +131,8 @@ class Recorder:
         self._database = database
         self._identities: dict[tuple[str, str], int] = {}
         self.run_id: int | None = None
+        # The id of the user an identity is, once the server's users are open.
+        self.user_of: Callable[[Identity], int | None] = lambda identity: None
         level = None if database is None else database.storage.record
         # Whether what's over is kept, rather than going as it ends; and whether the bytes themselves are.
         self.history = level not in (None, Record.MINIMAL)
@@ -127,6 +142,11 @@ class Recorder:
     def _write(self, sql: str, *params: Any) -> None:
         if self._database is not None:
             self._database.write(sql, *params)
+
+    def _tracked(self, context: dict[str, Any], sql: str, *params: Any) -> None:
+        """A write to a table whose changes are events, recorded as made for `context`."""
+        if self._database is not None:
+            self._database.write_for({"run": self.run_id, **context}, (sql, params))
 
     def _kept(self, sql: str, *params: Any) -> None:
         """A write only history wants."""
@@ -167,11 +187,12 @@ class Recorder:
     def identity(self, identity: Identity) -> int:
         key = (identity.method, identity.subject)
         now = self.now()
+        user = self.user_of(identity)
         if (found := self._identities.get(key)) is not None:
-            self._write(IDENTITY_SEEN, identity.name, now, found)
+            self._tracked(LOGGED_IN, IDENTITY_SEEN, identity.name, user, now, found)
             return found
         self._identities[key] = found = self._id("identities")
-        self._write(IDENTITY, found, identity.method, identity.subject, identity.name, now, now)
+        self._tracked(LOGGED_IN, IDENTITY, found, identity.method, identity.subject, identity.name, user, now, now)
         return found
 
     def auth(self, transport: str, method: str, peer: Peer, identity: Identity | None, reason: str | None) -> None:
@@ -189,7 +210,7 @@ class Recorder:
         )  # fmt: skip
 
     def deny(self, token: str, by: Identity) -> None:
-        self._write(GRANT_DENIED, token, self.now(), self.identity(by))
+        self._tracked(acting(by), GRANT_DENIED, token, self.now(), self.identity(by))
 
     def session_opened(self, session: Session, admin: bool, client: dict[str, Any]) -> None:
         identity_id = self.identity(session.identity)

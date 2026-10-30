@@ -57,6 +57,13 @@ def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
         ({"TRANSPORTS": ""}, "need at least one plugin each"),
         ({"PROXY_TRUSTED": "10.0.0.0/8,not-a-network"}, "PROXY_TRUSTED: 'not-a-network'"),
         ({"INDEX": "maybe"}, "^WILDBURROW_INDEX: expected one of never, opt-in, opt-out, got 'maybe'$"),
+        (
+            {"AUTH_PASSWORD_HASH": "$argon2id$x"},
+            "^WILDBURROW_AUTH_PASSWORD_HASH: gone in 0.6.0, since one password let anyone log in under any name; give "
+            "each user a line in WILDBURROW_AUTH_PASSWORD_USERS from `wildburrow passwords hash NAME`, or invite them "
+            "with `wildburrow users invite NAME`$",
+        ),
+        ({"AUTH_PASSWORD_HASH_FILE": "/h"}, "^WILDBURROW_AUTH_PASSWORD_HASH: gone in 0.6.0"),
     ],
 )
 def test_invalid_server_settings(tmp_path: Path, overrides: dict[str, str], message: str) -> None:

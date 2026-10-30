@@ -14,6 +14,8 @@ Each page covers one part: what it does, how to use it, and what to know.
   `wildburrow links`, `links add` and `links end`, your own login pages, and how it holds up
 - [sessions.md](sessions.md) - who is connected, `wildburrow tunnels` and `kick`, tunnels ending with their token, and
   who may see and end whose sessions
+- [users.md](users.md) - who a user is, inviting people with `wildburrow users invite` and `join`, making and unmaking
+  admins, and what's recorded about each change
 
 ## Running a server
 

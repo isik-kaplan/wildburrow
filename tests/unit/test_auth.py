@@ -123,10 +123,6 @@ class Clock:
             "users: alice's hash isn't an argon2 hash; make one with `wildburrow passwords hash alice`",
         ),
         (PasswordSettings(f"alice:{HASH}\nalice:{HASH}"), "users: alice is given twice"),
-        (
-            PasswordSettings(" \n# only a comment"),
-            "users: none given; add a line for each with `wildburrow passwords hash NAME`",
-        ),
         (PasswordSettings(USERS, max_failures=0), "max_failures and block_seconds must be at least 1"),
         (PasswordSettings(USERS, block_seconds=0), "max_failures and block_seconds must be at least 1"),
     ],
@@ -216,3 +212,51 @@ async def test_authenticator_without_a_matching_provider() -> None:
 
 def test_password_is_hidden_from_repr() -> None:
     assert "secret" not in repr(PasswordCredential("u", "secret"))
+
+
+async def test_a_keys_comment_names_its_user_and_device() -> None:
+    laptop, phone, bare = public_key("isik@laptop"), public_key("isik@phone@home"), public_key("@nobody")
+    auth = KeyAuth(KeySettings("\n".join(map(openssh_line, (laptop, phone, bare)))))
+    found = await auth.authenticate(PublicKeyCredential("u", laptop.public_data), PEER)
+    assert found == Identity("isik@laptop", "key", laptop.get_fingerprint())
+    assert found is not None
+    assert found.user == "isik"
+    assert auth.users() == {"isik", "@nobody"}
+    assert auth.fingerprints() == {key.get_fingerprint() for key in (laptop, phone, bare)}
+
+
+class Joined:
+    """Database users, as the server's users would find them."""
+
+    def __init__(self, key: asyncssh.SSHKey) -> None:
+        self._key = key
+
+    def password(self, name: str) -> tuple[str, str] | None:
+        return ("carol", HASH) if name in ("carol", "c") else None
+
+    def key(self, data: bytes) -> tuple[str, str, str] | None:
+        return ("carol", "SHA256:carol", "phone") if data == self._key.public_data else None
+
+
+async def test_database_users_log_in_by_their_password_or_key() -> None:
+    joined, settings = public_key("phone"), public_key("laptop")
+    keys, passwords = KeyAuth(KeySettings(openssh_line(settings))), PasswordAuth(PasswordSettings(max_failures=2))
+    assert passwords.users() == set()
+    assert await passwords.authenticate(PasswordCredential("carol", "secret"), PEER) is None
+    Authenticator([keys, passwords]).look_up(Joined(joined))  # type: ignore[arg-type]
+    carol = Identity("carol@phone", "key", "SHA256:carol", owner="carol")
+    assert await keys.authenticate(PublicKeyCredential("u", joined.public_data), PEER) == carol
+    assert await keys.authenticate(PublicKeyCredential("u", public_key().public_data), PEER) is None
+    by_alias = await passwords.authenticate(PasswordCredential("c", "secret"), OTHER_PEER)
+    assert by_alias == Identity("carol", "password", "carol")
+    assert await passwords.authenticate(PasswordCredential("carol", "wrong"), OTHER_PEER) is None
+    assert not passwords.blocked(OTHER_PEER.host)
+
+
+def test_the_authenticator_gathers_the_settings_users_and_keys() -> None:
+    key = public_key("isik@laptop")
+    found = Authenticator(
+        [KeyAuth(KeySettings(openssh_line(key))), PasswordAuth(PasswordSettings(USERS)), Fixed((), None)]
+    )
+    assert found.users() == {"isik", "alice", "bob", "a"}
+    assert found.fingerprints() == {key.get_fingerprint()}

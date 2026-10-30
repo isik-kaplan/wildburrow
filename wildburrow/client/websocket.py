@@ -204,6 +204,62 @@ async def deny(
     return await ask_server(config, protocol.DENY, "denied", ask, connector, protocol.DENY, tokens=list(tokens))
 
 
+async def users(
+    config: ClientConfig, ask: Callable[[str], str] | None = None, connector: Callable[..., Any] | None = None
+) -> dict[str, Any]:
+    """Every user of the server, for an admin, or why not."""
+    return await ask_server(config, protocol.USERS, "users", ask, connector, protocol.USERS)
+
+
+async def invite(
+    config: ClientConfig,
+    name: str,
+    seconds: int | None,
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """A one-time code that lets someone set up their own login as `name`, or why not."""
+    fields = {"name": name} if seconds is None else {"name": name, "expires": seconds}
+    return await ask_server(config, "invite", "invited", ask, connector, protocol.USERS, **fields)
+
+
+async def set_admin(
+    config: ClientConfig,
+    name: str,
+    admin: bool,
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Makes a user invited to the server an admin, or not."""
+    return await ask_server(config, "set-admin", "admin-set", ask, connector, protocol.USERS, name=name, admin=admin)
+
+
+async def remove_user(
+    config: ClientConfig,
+    name: str,
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Stops a user invited to the server logging in, ending their sessions."""
+    return await ask_server(config, "remove-user", "removed-user", ask, connector, protocol.USERS, name=name)
+
+
+async def join(config: ClientConfig, request: dict[str, Any], connector: Callable[..., Any] | None = None) -> str:
+    """Sets up the login an invite is for, before having one; the name it's for."""
+    try:
+        async with (connector or connect)(f"{websocket_base(config)}{protocol.CONNECT_PATH}") as control:
+            await control.send(protocol.encode(protocol.JOIN, **request))
+            answer = protocol.decode(await control.recv())
+    except ConnectionClosed as exc:
+        if exc.rcvd is not None and exc.rcvd.code == protocol.CLOSE_PROTOCOL_ERROR:
+            needed = protocol.SINCE[protocol.USERS]
+            raise ClientError(f"{config.server} takes no invites; it needs {needed} or later") from None
+        raise ClientError(f"{config.server} closed the connection: {exc}") from None
+    if "error" in answer:
+        raise ClientError(str(answer["error"]))
+    return str(answer["name"])
+
+
 async def end_logins(
     config: ClientConfig,
     whos: Sequence[str],

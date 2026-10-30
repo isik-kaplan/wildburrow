@@ -58,11 +58,14 @@ one is.
 |---|---|
 | `signers` | Key logins whose key is also in `WILDBURROW_AUTH_TOKEN_SIGNERS` (the default) |
 | `key`, `token`, `password` | Everyone logging in with that method |
-| `key:SHA256:...` or `key:COMMENT` | One key, by fingerprint or its comment in the authorized keys |
+| `key:SHA256:...`, `key:COMMENT` or `key:USER` | One key, by fingerprint or its comment; or every key of one user |
 | `token:NAME` | One token holder |
 | `password:NAME` | One password user |
 | `all` | Everyone who can log in |
 | `none` | No one |
+
+An admin can also make an invited user an admin with `wildburrow users promote`, and take it back with `demote`; see
+[users.md](users.md). Those are on top of the rules: no one can take away what the rules give.
 
 `signers` needs the key in `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` too, since an admin logs in like anyone else. Whoever
 holds a signer key can already mint a token for any name, so making them admins grants nothing new.
@@ -82,8 +85,8 @@ won't start if it does.
 
 ### What counts as your own
 
-The same identity: the same key, the same token holder (any of their tokens), the same name line in
-`WILDBURROW_AUTH_TOKEN_HASHES`, or the same user in `WILDBURROW_AUTH_PASSWORD_USERS`.
+The same user: every key, token and password of theirs, so `isik@laptop` and `isik@phone` reach each other's sessions,
+links and tunnels as one person's. See [users.md](users.md) for what makes a user.
 
 ### Before widening them
 

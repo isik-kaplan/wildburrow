@@ -4,20 +4,23 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from argon2 import PasswordHasher, extract_parameters
 from argon2.exceptions import InvalidHashError, VerificationError
 
-from wildburrow.auth.base import USER_NAME, lines
+from wildburrow.auth.base import USER_NAME, lines, nobody
 from wildburrow.config import ConfigError
 from wildburrow.core.types import Identity, PasswordCredential, Peer
+
+if TYPE_CHECKING:
+    from wildburrow.core.users import Users
 
 
 @dataclass(frozen=True, slots=True)
 class PasswordSettings:
-    # One `name:argon2hash` line per user, from `wildburrow passwords hash NAME`.
-    users: str
+    # One `name:argon2hash` line per user, from `wildburrow passwords hash NAME`; users invited at runtime come on top.
+    users: str = ""
     max_failures: int = 5
     block_seconds: int = 900
 
@@ -37,6 +40,15 @@ class PasswordAuth:
         # No one knows its password, so it never lets anyone in.
         self._decoy = self._hasher.hash(secrets.token_hex())
         self._failures: dict[str, deque[float]] = {}
+        # Database users' names and hashes, by their name or alias. Set once users are open.
+        self.database: Callable[[str], tuple[str, str] | None] = nobody
+
+    def users(self) -> set[str]:
+        """The users these settings let in."""
+        return set(self._users)
+
+    def look_up(self, users: Users) -> None:
+        self.database = users.password
 
     def blocked(self, host: str) -> bool:
         self._expire()
@@ -48,10 +60,12 @@ class PasswordAuth:
         attempt = self._clock()
         failures = self._failures.setdefault(peer.host, deque())
         failures.append(attempt)
-        hashed = self._users.get(credential.username, self._decoy)
+        name = credential.username
+        found = (name, self._users[name]) if name in self._users else self.database(name)
+        user, hashed = found or (name, self._decoy)
         if await asyncio.to_thread(self._verify, hashed, credential.password):
             failures.remove(attempt)
-            return Identity(credential.username, "password", credential.username)
+            return Identity(user, "password", user)
         return None
 
     def _verify(self, hashed: str, password: str) -> bool:
@@ -86,6 +100,4 @@ def _users(text: str) -> dict[str, str]:
                 f"users: {name}'s hash isn't an argon2 hash; make one with `wildburrow passwords hash {name}`"
             ) from None
         users[name] = hashed
-    if not users:
-        raise ConfigError("users: none given; add a line for each with `wildburrow passwords hash NAME`")
     return users

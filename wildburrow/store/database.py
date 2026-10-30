@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import os
 import sqlite3
@@ -23,16 +24,24 @@ DATABASE_PREFIX = f"{PREFIX}DATABASE_"
 MEMORY = ":memory:"
 # 'WBRW': a file without it isn't one of ours.
 APPLICATION_ID = 1463964247
-VERSION = 1
+VERSION = 2
+# The first schema, and each later one as the change from the one before; a new file goes through them all, as an older
+# one catches up.
 SCHEMA = (resources.files(__package__) / "schema.sql").read_text()
+MIGRATIONS = {version: (resources.files(__package__) / "migrations" / f"{version}.sql").read_text() for version in (2,)}
 # Every table whose id the server assigns from a counter, carried on from the largest one already there: each one
 # another row points at before the batch carrying it is written.
-COUNTED = ("runs", "identities", "commands", "tunnels", "connections", "certificates")
+COUNTED = ("runs", "identities", "commands", "tunnels", "connections", "certificates", "users", "user_keys", "invites")
 AUTO_VACUUM = "PRAGMA auto_vacuum = INCREMENTAL"
 TABLES = "SELECT count(*) FROM sqlite_schema WHERE type = 'table'"
 APPLICATION = "PRAGMA application_id"
 USER_VERSION = "PRAGMA user_version"
 BEGIN, COMMIT, ROLLBACK = "BEGIN IMMEDIATE", "COMMIT", "ROLLBACK"
+# Who the server is writing for, which the event triggers copy in; set right before its writes and gone right after.
+CONTEXT_SET = "INSERT INTO event_context (id, context) VALUES (1, ?)"
+CONTEXT_CLEAR = "DELETE FROM event_context"
+# What purging old rows is recorded as having been done for.
+PURGING = '{"by":"purge"}'
 TIDY = ("PRAGMA incremental_vacuum", "PRAGMA optimize")
 CHECKPOINT = "PRAGMA wal_checkpoint(TRUNCATE)"
 PRAGMAS = (
@@ -135,15 +144,28 @@ def connect(path: str) -> sqlite3.Connection:
         connection.close()
         raise DatabaseError(f"{path} can't be opened as a database: {exc}") from None
     if made:
-        connection.executescript(f"BEGIN; {SCHEMA}; PRAGMA application_id = {APPLICATION_ID}; COMMIT;")
-        connection.execute(f"{USER_VERSION} = {VERSION}")
+        connection.executescript(
+            f"BEGIN; {SCHEMA}; PRAGMA application_id = {APPLICATION_ID}; {USER_VERSION} = 1; COMMIT;"
+        )
     elif _one(connection, APPLICATION) != APPLICATION_ID:
         connection.close()
         raise DatabaseError(f"{path} isn't a wildburrow database")
     elif (version := _one(connection, USER_VERSION)) > VERSION:
         connection.close()
         raise DatabaseError(f"{path} was written by a newer wildburrow (schema {version}; this one knows {VERSION})")
+    for version in range(_one(connection, USER_VERSION) + 1, VERSION + 1):
+        _migrate(connection, path, version)
     return connection
+
+
+def _migrate(connection: sqlite3.Connection, path: str, version: int) -> None:
+    """Brings the file up to `version` from the one before, all of it or none."""
+    try:
+        connection.executescript(f"BEGIN; {MIGRATIONS[version]}; {USER_VERSION} = {version}; COMMIT;")
+    except sqlite3.Error as exc:
+        connection.execute(ROLLBACK)
+        connection.close()
+        raise DatabaseError(f"{path} couldn't be brought up to schema {version}: {exc}") from None
 
 
 # What purging takes, oldest first: each a table, its key, and when a row of it finished.
@@ -212,6 +234,16 @@ class Database:
             self._flushing = asyncio.create_task(self.flush())
             self._flushing.add_done_callback(lambda _: setattr(self, "_flushing", None))
 
+    def write_for(self, context: dict[str, Any], *writes: tuple[str, tuple[Any, ...]]) -> None:
+        """Queues writes the event tables record as made for `context`: who, and from where."""
+        for write in _within(context, writes):
+            self.write(write[0], *write[1])
+
+    async def write_now(self, context: dict[str, Any], *writes: tuple[str, tuple[Any, ...]]) -> None:
+        """Writes at once, after what's queued, for what can't wait for the next batch: who may log in."""
+        await self.flush()
+        await self._run(lambda connection: _apply(connection, _within(context, writes)))
+
     async def read(self, sql: str, *params: Any) -> list[tuple[Any, ...]]:
         return await self._run(lambda connection: connection.execute(sql, params).fetchall())
 
@@ -263,6 +295,12 @@ class Database:
         self._executor.shutdown()
 
 
+def _within(
+    context: dict[str, Any], writes: Iterable[tuple[str, tuple[Any, ...]]]
+) -> list[tuple[str, tuple[Any, ...]]]:
+    return [(CONTEXT_SET, (json.dumps(context, separators=(",", ":"), sort_keys=True),)), *writes, (CONTEXT_CLEAR, ())]
+
+
 def _apply(connection: sqlite3.Connection, batch: Iterable[tuple[str, tuple[Any, ...]]]) -> None:
     connection.execute(BEGIN)
     try:
@@ -276,7 +314,9 @@ def _apply(connection: sqlite3.Connection, batch: Iterable[tuple[str, tuple[Any,
 
 def _changed(connection: sqlite3.Connection, sql: str, cutoff: int) -> int:
     connection.execute(BEGIN)
+    connection.execute(CONTEXT_SET, (PURGING,))
     count = connection.execute(sql, (cutoff,)).rowcount
+    connection.execute(CONTEXT_CLEAR)
     connection.execute(COMMIT)
     return count
 

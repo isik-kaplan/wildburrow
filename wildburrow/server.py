@@ -20,16 +20,30 @@ from wildburrow.core.context import ServerContext
 from wildburrow.core.locks import Locking
 from wildburrow.core.names import LABEL
 from wildburrow.core.sessions import Admins, Policy, level
+from wildburrow.core.users import Users
 from wildburrow.dns.recorded import RecordedDNS
 from wildburrow.edge import proxy
 from wildburrow.edge.http import Edge, Mode
 from wildburrow.locks import FIELDS, LOCK_PREFIX, LockSettings, ServerLockSettings, problems
 from wildburrow.store.database import DATABASE_PREFIX, Database, DatabaseError, DatabaseSettings, storage
 from wildburrow.store.record import Handler, Recorder
+from wildburrow.store.users import UserStore
 
 log = logging.getLogger(__name__)
 
 CERT_RETRY_SECONDS = 300
+# Settings an earlier wildburrow took, and what to do instead, so one left set isn't quietly ignored.
+GONE = {
+    f"{config.PREFIX}AUTH_PASSWORD_HASH": (
+        f"gone in 0.6.0, since one password let anyone log in under any name; give each user a line in "
+        f"{config.PREFIX}AUTH_PASSWORD_USERS from `wildburrow passwords hash NAME`, or invite them with "
+        f"`wildburrow users invite NAME`"
+    ),
+}
+MEMORY_USERS = (
+    f"{config.PREFIX}DATABASE isn't set, so the database is in memory: users invited while the server runs, and who "
+    f"was made an admin, are lost when it stops. Set {config.PREFIX}DATABASE to a file to keep them."
+)
 
 
 class Server:
@@ -37,6 +51,9 @@ class Server:
         domain = settings.domain.lower()
         if not all(LABEL.fullmatch(label) for label in domain.split(".")):
             raise config.ConfigError(f"{config.PREFIX}DOMAIN: {settings.domain!r} is not a valid domain")
+        for name, why in GONE.items():
+            if name in env or f"{name}{config.FILE_SUFFIX}" in env:
+                raise config.ConfigError(f"{name}: {why}")
         if not settings.auth or not settings.transports:
             raise config.ConfigError(f"{config.PREFIX}AUTH and {config.PREFIX}TRANSPORTS need at least one plugin each")
         try:
@@ -45,15 +62,20 @@ class Server:
             raise config.ConfigError(f"{config.PREFIX}PROXY_TRUSTED: {exc}") from None
         self.settings = settings
         authenticator = Authenticator([plugins.load("auth", name, env) for name in settings.auth])
+        database = Database(storage(settings.database, config.load(DatabaseSettings, env, DATABASE_PREFIX)))
+        users = Users(UserStore(database))
+        record = Recorder(database)
+        record.user_of = users.id_of
         self.ctx = ServerContext(
             domain=domain,
             max_depth=settings.max_depth,
             data_dir=settings.data_dir,
             authenticator=authenticator,
-            policy=policy(settings, authenticator),
+            policy=policy(settings, authenticator, users),
             locking=locking(env),
             indexing=indexing.parse(f"{config.PREFIX}INDEX", settings.index),
-            record=Recorder(Database(storage(settings.database, config.load(DatabaseSettings, env, DATABASE_PREFIX)))),
+            record=record,
+            users=users,
         )
         self.loaded: dict[str, Any] = {name: plugins.load("transport", name, env) for name in settings.transports}
         self.transports: list[Any] = list(self.loaded.values())
@@ -117,6 +139,7 @@ class Server:
                 raise config.ConfigError(f"{config.PREFIX}DATABASE: {exc}") from None
             stack.push_async_callback(record.close)
             self.ctx.denied = denied
+            await self._open_users()
             handler = Handler(record)
             logging.getLogger(__package__).addHandler(handler)
             stack.callback(logging.getLogger(__package__).removeHandler, handler)
@@ -140,6 +163,14 @@ class Server:
         log.info("serving *.%s", self.ctx.domain)
         return self
 
+    async def _open_users(self) -> None:
+        users, authenticator = self.ctx.users, self.ctx.authenticator
+        users.run_id = self.ctx.record.run_id
+        await users.open(authenticator.users(), authenticator.fingerprints())
+        authenticator.look_up(users)
+        if users.memory:
+            log.warning(MEMORY_USERS)
+
     async def __aexit__(self, *exc: object) -> None:
         await self._stack.aclose()
 
@@ -158,9 +189,10 @@ def recorded(settings: config.ServerSettings) -> dict[str, Any]:
     return json.loads(json.dumps(found, default=str))
 
 
-def policy(settings: config.ServerSettings, authenticator: Authenticator) -> Policy:
-    """Who is an admin, and how far anyone sees and ends other sessions."""
+def policy(settings: config.ServerSettings, authenticator: Authenticator, users: Users) -> Policy:
+    """Who is an admin, by the settings or made one in the database, and how far anyone sees and ends sessions."""
     admins = Admins.parse(f"{config.PREFIX}ADMINS", settings.admins, settings.auth, authenticator.signers())
+    admins = dataclasses.replace(admins, database=users.admins)
     see, kick = level(f"{config.PREFIX}SEE", settings.see), level(f"{config.PREFIX}KICK", settings.kick)
     return Policy(admins, see, kick)
 

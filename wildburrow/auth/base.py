@@ -1,11 +1,19 @@
 import re
 from collections.abc import Mapping, Sequence
-from typing import ClassVar, Protocol
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from wildburrow.core.types import Credential, Identity, Peer
 
+if TYPE_CHECKING:
+    from wildburrow.core.users import Users
+
 # A name someone logs in under: no spaces, and no colon, which ends it in a settings line.
 USER_NAME = re.compile(r"[^\s:]{1,64}")
+
+
+def nobody(_: object) -> None:
+    """No one: what a plugin finds among database users before the server has them open."""
+    return None
 
 
 def lines(text: str) -> list[str]:
@@ -30,6 +38,22 @@ class Authenticator:
         """The named methods some provider takes, in the order the providers are tried."""
         found = [method for provider in self._providers for method, kind in kinds.items() if kind in provider.handles]
         return list(dict.fromkeys(found))
+
+    def users(self) -> set[str]:
+        """The users the settings name, by every provider that names any."""
+        return set().union(*(provider.users() for provider in self._providers if hasattr(provider, "users")))
+
+    def fingerprints(self) -> set[str]:
+        """The keys the settings let in."""
+        return set().union(
+            *(provider.fingerprints() for provider in self._providers if hasattr(provider, "fingerprints"))
+        )
+
+    def look_up(self, users: Users) -> None:
+        """Has every provider that can log in database users find them in `users`."""
+        for provider in self._providers:
+            if hasattr(provider, "look_up"):
+                provider.look_up(users)
 
     def signers(self) -> frozenset[str]:
         """Fingerprints of the keys some provider takes signed tokens from."""

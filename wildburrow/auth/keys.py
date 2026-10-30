@@ -1,13 +1,18 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import asyncssh
 
 from wildburrow import protocol
 from wildburrow.auth import sshsig
+from wildburrow.auth.base import nobody
 from wildburrow.config import SHOWN, ConfigError
 from wildburrow.core.types import Identity, Peer, PublicKeyCredential, SignedChallengeCredential
+
+if TYPE_CHECKING:
+    from wildburrow.core.users import Users
 
 # The keys that can already log in to the account the server runs as.
 DEFAULT_AUTHORIZED_KEYS = Path("~/.ssh/authorized_keys")
@@ -42,12 +47,29 @@ class KeyAuth:
             self._keys[key.public_data] = (key.get_comment() or fingerprint, fingerprint)
         if not self._keys:
             raise ConfigError("authorized_keys: no keys found")
+        # Keys database users joined with: the user, the key's fingerprint and its device. Set once users are open.
+        self.database: Callable[[bytes], tuple[str, str, str] | None] = nobody
+
+    def users(self) -> set[str]:
+        """The users these keys log in."""
+        return {owner(name) for name, _ in self._keys.values()}
+
+    def fingerprints(self) -> set[str]:
+        return {fingerprint for _, fingerprint in self._keys.values()}
+
+    def look_up(self, users: Users) -> None:
+        self.database = users.key
 
     async def authenticate(
         self, credential: PublicKeyCredential | SignedChallengeCredential, peer: Peer
     ) -> Identity | None:
-        known = self._keys.get(credential.public_key)
-        if known is None:
+        if (found := self._keys.get(credential.public_key)) is not None:
+            name, fingerprint = found
+            user = owner(name)
+        elif (joined := self.database(credential.public_key)) is not None:
+            user, fingerprint, device = joined
+            name = f"{user}@{device}"
+        else:
             return None
         if isinstance(credential, SignedChallengeCredential):
             try:
@@ -56,5 +78,9 @@ class KeyAuth:
                 )
             except sshsig.InvalidSignature:
                 return None
-        name, fingerprint = known
-        return Identity(name, "key", fingerprint)
+        return Identity(name, "key", fingerprint, owner=user)
+
+
+def owner(comment: str) -> str:
+    """The user a key's comment names: `isik@laptop` is isik's, on their laptop."""
+    return comment.partition("@")[0] or comment

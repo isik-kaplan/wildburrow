@@ -24,6 +24,17 @@ class Identity:
     expires: int | None = field(default=None, compare=False)
     # The signed token's id, for denying it.
     token: str = field(default="", compare=False)
+    # The user it belongs to, when that isn't its name: a key's comment names a device as `user@device`. One user's
+    # identities are their devices, each its own identity but all theirs.
+    owner: str = field(default="", compare=False)
+
+    @property
+    def user(self) -> str:
+        return user_of(self)
+
+
+def user_of(identity: Identity) -> str:
+    return identity.owner or identity.name
 
 
 @dataclass(frozen=True, slots=True)

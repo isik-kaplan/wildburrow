@@ -143,6 +143,36 @@ def test_a_file_that_isnt_ours_or_is_newer_is_refused(tmp_path: Path, setup: str
         connect(str(path))
 
 
+def version_one(path: Path, *writes: str) -> None:
+    """A file as 0.5.0 left it, with `writes` made in it."""
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as old:
+        old.executescript(f"BEGIN; {database.SCHEMA}; PRAGMA application_id = {APPLICATION_ID}; COMMIT;")
+        old.execute("PRAGMA user_version = 1")
+        for write in writes:
+            old.execute(write)
+
+
+def test_a_file_from_0_5_0_is_brought_up_to_date_keeping_what_it_held(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    version_one(path, "INSERT INTO identities VALUES (7, 'key', 'SHA256:x', 'laptop', 1, 2)")
+    with contextlib.closing(connect(str(path))) as connection:
+        assert pragma(connection, "user_version") == VERSION
+        assert connection.execute("SELECT id, name, user_id FROM identities").fetchall() == [(7, "laptop", None)]
+        assert connection.execute("SELECT count(*) FROM users_events").fetchone() == (0,)
+
+
+def test_a_file_that_cant_be_brought_up_to_date_is_left_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "old.db"
+    version_one(path)
+    monkeypatch.setitem(database.MIGRATIONS, 2, "CREATE TABLE users (x); CREATE TABLE users (x)")
+    with pytest.raises(DatabaseError, match=f"^{re.escape(str(path))} couldn't be brought up to schema 2: .*users"):
+        connect(str(path))
+    assert peek(path, "PRAGMA user_version") == [(1,)]
+    assert peek(path, "SELECT count(*) FROM sqlite_schema WHERE name = 'users'") == [(0,)]
+
+
 def test_a_file_that_isnt_a_database_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "notes.txt"
     path.write_text("not a database, just long enough to look like a header to sqlite\n" * 4)
@@ -485,6 +515,21 @@ async def test_logins_identities_and_tokens(recorder: Recorder) -> None:
     ]
 
 
+async def test_an_identity_is_kept_as_its_users(recorder: Recorder) -> None:
+    assert recorder._database is not None
+    await recorder._database.write_now(
+        {}, ("INSERT INTO users (id, name, source, created_at) VALUES (1, 'alice', 'settings', 0)", ())
+    )
+    recorder.user_of = lambda identity: 1 if identity.name != "nobody's" else None
+    recorder.auth("websocket", "token", PEER, ALICE, None)
+    recorder.auth("ssh", "key", PEER, Identity("nobody's", "key", "SHA256:x"), None)
+    assert await rows(recorder, "SELECT subject, user_id FROM identities ORDER BY id") == [
+        ("alice-token", 1), ("SHA256:x", None),
+    ]  # fmt: skip
+    recorder.auth("ssh", "key", PEER, Identity("now alice's", "key", "SHA256:x"), None)
+    assert await rows(recorder, "SELECT user_id FROM identities WHERE subject = 'SHA256:x'") == [(1,)]
+
+
 async def test_a_token_any_name_may_use_is_kept_as_such(recorder: Recorder) -> None:
     recorder.auth("websocket", "token", PEER, Identity("ci", "token", "ci-token", token="t2"), None)
     assert await rows(recorder, "SELECT id, names, expires_at FROM tokens") == [("t2", None, None)]
@@ -502,6 +547,11 @@ async def test_denied_tokens_are_kept_for_the_next_run(tmp_path: Path) -> None:
     assert await second.open("0.5.0", "host", "example.com", {}) == {"t1", "t9"}
     assert await rows(second, "SELECT id, revoked_at, revoked_by_identity_id FROM tokens ORDER BY id") == [
         ("t1", NOW, 2), ("t9", NOW, 2),
+    ]  # fmt: skip
+    # Each denial is an event, kept as compact JSON with its keys in order.
+    assert await rows(second, "SELECT row_id, context FROM tokens_events WHERE revoked_at IS NOT NULL") == [
+        ("t1", '{"identity":"SHA256:abc","method":"key","run":1,"user":"laptop"}'),
+        ("t9", '{"identity":"SHA256:abc","method":"key","run":1,"user":"laptop"}'),
     ]  # fmt: skip
     second.auth("websocket", "key", PEER, LAPTOP, None)
     assert await rows(second, "SELECT count(*) FROM identities") == [(2,)]

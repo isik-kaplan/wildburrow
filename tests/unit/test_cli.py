@@ -274,7 +274,7 @@ def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
 ) -> None:
     environ = {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
     monkeypatch.setattr(server_cli.os, "environ", environ)
-    typed(ENTER, "tunnel.example.com", ENTER, ENTER, "alice:$argon2id$hash", ENTER, ENTER, "cf-token", ENTER)
+    typed(ENTER, "tunnel.example.com", ENTER, ENTER, ENTER, "cf-token", ENTER)
     assert cli.main(["serve", "--dns", "cloudflare", "--auth-key-authorized-keys", "ssh-ed25519 AAAA"]) == 0
     assert served == [
         environ
@@ -282,13 +282,11 @@ def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
             f"{PREFIX}DNS": "cloudflare",
             f"{PREFIX}AUTH_KEY_AUTHORIZED_KEYS": "ssh-ed25519 AAAA",
             f"{PREFIX}DOMAIN": "tunnel.example.com",
-            f"{PREFIX}AUTH_PASSWORD_USERS": "alice:$argon2id$hash",
             f"{PREFIX}DNS_CLOUDFLARE_API_TOKEN": "cf-token",
         }
     ]
     assert typed.showed(
         f"? {PREFIX}DOMAIN tunnel.example.com",
-        f"? {PREFIX}AUTH_PASSWORD_USERS alice:$argon2id$hash",
         f"? {PREFIX}DNS_CLOUDFLARE_API_TOKEN ********",
     )
     assert environ == {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
@@ -805,6 +803,7 @@ PAGES = [
     [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["links"], ["links", "add"],
     ["links", "end"], ["config"], ["config", "set"], ["config", "unset"],
     ["serve"], ["passwords"], ["passwords", "hash"], ["tokens"], ["tokens", "new"], ["tokens", "deny"],
+    ["users"], ["users", "invite"], ["users", "promote"], ["users", "demote"], ["users", "remove"], ["join"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip
 
@@ -889,7 +888,8 @@ def test_every_setting_can_be_given_or_says_why_not(command: click.Command) -> N
 
 def test_the_client_commands_declare_their_settings() -> None:
     assert {command.name for command in _bound(cli.cli)} == {
-        "connect", "login", "logout", "names", "tunnels", "kick", "links", "add", "end", "new", "deny",
+        "connect", "login", "logout", "names", "tunnels", "kick", "links", "add", "end", "new", "deny", "users",
+        "invite", "promote", "demote", "remove", "join",
     }  # fmt: skip
 
 

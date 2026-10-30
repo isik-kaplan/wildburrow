@@ -20,6 +20,11 @@ ALL = "all"
 SIGNERS = "signers"
 
 
+def same(one: Identity, other: Identity) -> bool:
+    """Whether two identities are one user's, as two of their devices are."""
+    return one.user == other.user
+
+
 class Level(IntEnum):
     NONE = 0
     OWN = 1
@@ -48,6 +53,8 @@ class Admins:
     exact: frozenset[tuple[str, str]] = frozenset()
     # Fingerprints of key logins that count, from the token signers.
     keys: frozenset[str] = frozenset()
+    # Database users an admin made admins, kept live by the users they're in.
+    database: Collection[str] = frozenset()
 
     @classmethod
     def parse(cls, var: str, rules: Collection[str], auth: Collection[str], signers: Collection[str]) -> Admins:
@@ -78,8 +85,10 @@ class Admins:
     def __contains__(self, identity: Identity) -> bool:
         return (
             self.everyone
+            or identity.user in self.database
             or identity.method in self.methods
             or (identity.method, identity.name) in self.exact
+            or (identity.method, identity.user) in self.exact
             or (identity.method, identity.subject) in self.exact
             or (identity.method == "key" and identity.subject in self.keys)
         )
@@ -104,7 +113,7 @@ class Policy:
     def _reaches(self, level: Level, actor: Identity, target: Identity) -> bool:
         if level is Level.NONE:
             return False
-        if actor == target:
+        if same(actor, target):
             return True
         return level >= Level.ADMINS and actor in self.admins and (level is Level.ALL or target not in self.admins)
 
@@ -149,7 +158,7 @@ class Sessions:
 def describe(session: Session, names: list[str], shown_to: Identity, admin: bool) -> dict[str, Any]:
     """What `shown_to` is told about `session`: its address only for admins and for their own."""
     identity = session.identity
-    yours = shown_to == identity
+    yours = same(shown_to, identity)
     entry = {
         "id": session.id,
         "who": identity.name,

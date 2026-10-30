@@ -76,12 +76,12 @@ def admins(*rules: str, signers: tuple[str, ...] = ()) -> Admins:
     [
         (("none",), set()),
         ((" none ",), set()),
-        (("all",), {"alice", "bob", "laptop", "phone", "pw"}),
-        (("key", "all"), {"alice", "bob", "laptop", "phone", "pw"}),
-        (("key",), {"laptop", "phone"}),
+        (("all",), {"alice", "bob", "laptop", "phone", "pw", "isik@laptop"}),
+        (("key", "all"), {"alice", "bob", "laptop", "phone", "pw", "isik@laptop"}),
+        (("key",), {"laptop", "phone", "isik@laptop"}),
         (("token",), {"alice", "bob"}),
         (("password",), {"pw"}),
-        (("key", "password"), {"laptop", "phone", "pw"}),
+        (("key", "password"), {"laptop", "phone", "pw", "isik@laptop"}),
         (("signers",), {"phone"}),
         (("token:alice",), {"alice"}),
         (("token:signed:bob",), {"bob"}),
@@ -90,12 +90,20 @@ def admins(*rules: str, signers: tuple[str, ...] = ()) -> Admins:
         (("key:alice",), set()),
         (("signers", "token:bob"), {"phone", "bob"}),
         (("password:pw",), {"pw"}),
+        (("key:isik",), {"isik@laptop"}),
         (("password:other",), set()),
     ],
 )
 def test_admin_rules(rules: tuple[str, ...], members: set[str]) -> None:
     found = admins(*rules, signers=("SHA256:phone", "signed:alice"))
-    everyone = [ALICE, BOB, LAPTOP, PHONE, Identity("pw", "password", "pw")]
+    everyone = [
+        ALICE,
+        BOB,
+        LAPTOP,
+        PHONE,
+        Identity("pw", "password", "pw"),
+        Identity("isik@laptop", "key", "SHA256:i", owner="isik"),
+    ]
     assert {identity.name for identity in everyone if identity in found} == members
 
 

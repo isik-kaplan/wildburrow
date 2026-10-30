@@ -36,6 +36,10 @@ class TokenAuth:
         self._deny = frozenset(settings.deny)
         self._clock = clock
 
+    def users(self) -> set[str]:
+        """The users the token hashes name; signed tokens' holders are met as they log in."""
+        return set(self._names.values())
+
     async def authenticate(self, credential: TokenCredential, peer: Peer) -> Identity | None:
         if credential.token.startswith(tokens.PREFIX):
             return self._signed(credential.token)

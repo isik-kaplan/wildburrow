@@ -21,7 +21,10 @@ SESSIONS = "sessions"
 LOCK = "lock"
 INDEX = "index"
 DENY = "deny"
-SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0", INDEX: "0.5.0", DENY: "0.5.0"}
+USERS = "users"
+SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0", INDEX: "0.5.0", DENY: "0.5.0", USERS: "0.6.0"}
+# Sent instead of a hello, by someone setting up the login an invite is for; answered, then closed.
+JOIN = "join"
 CLOSE_PROTOCOL_ERROR = 4400
 CLOSE_AUTH_FAILED = 4401
 CLOSE_UNKNOWN_STREAM = 4404

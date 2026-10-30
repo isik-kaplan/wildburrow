@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import hashlib
 import logging
@@ -6,13 +7,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import asyncssh
+from argon2 import PasswordHasher
+
 from wildburrow.auth.base import Authenticator
 from wildburrow.core.errors import BindRejected
 from wildburrow.core.indexing import Indexing, indexed
 from wildburrow.core.locks import Lock, Locking, build, entry_id
 from wildburrow.core.names import InvalidName, Name, allows, host_labels, parse_name
 from wildburrow.core.registry import NameTaken, Registry
-from wildburrow.core.sessions import Policy, Session, Sessions, describe
+from wildburrow.core.sessions import Policy, Session, Sessions, describe, same
 from wildburrow.core.types import (
     Credential,
     Destination,
@@ -24,8 +28,10 @@ from wildburrow.core.types import (
     TokenCredential,
     Tunnel,
 )
+from wildburrow.core.users import INVITE_SECONDS, Key, UserError, Users
 from wildburrow.locks import LABEL, LINK, PAGES, next_links, safe_path
-from wildburrow.store.record import Recorder
+from wildburrow.store.record import Recorder, acting
+from wildburrow.store.users import UserStore
 
 if TYPE_CHECKING:
     from wildburrow.certs.manager import CertManager
@@ -43,6 +49,8 @@ class NotAllowed(BindRejected):
 
 REFUSED = "refused"
 DENIED = "denied"
+# Let in by a credential, but not as a user who may log in here: a token signed for a database user's name, say.
+NOT_A_USER = "not-a-user"
 # How each kind of credential logs in, as recorded.
 METHODS = {
     PublicKeyCredential: "key", SignedChallengeCredential: "key", PasswordCredential: "password",
@@ -66,6 +74,7 @@ class ServerContext:
     root: Destination | None = None
     indexing: Indexing = Indexing.OPT_IN
     record: Recorder = field(default_factory=Recorder)
+    users: Users = field(default_factory=lambda: Users(UserStore(None)))
     # Ids of signed tokens denied while the server runs, or in an earlier run on file.
     denied: set[str] = field(default_factory=set)
     # What clients are told about logging in, published once the transports know their ports.
@@ -161,6 +170,8 @@ class ServerContext:
         reason = None if identity is not None else REFUSED
         if identity is not None and identity.token in self.denied:
             identity, reason = None, DENIED
+        elif identity is not None and not await self.users.admit(identity):
+            identity, reason = None, NOT_A_USER
         self.record.auth(transport, METHODS[type(credential)], peer, identity, reason)
         return identity
 
@@ -274,7 +285,9 @@ class ServerContext:
         """The locked tunnels of `actor`'s own identity, each once, with their locks."""
         found = {id(tunnel): tunnel for tunnel in self.registry.holders().values()}
         return [
-            (tunnel, tunnel.lock) for tunnel in found.values() if tunnel.lock is not None and actor == tunnel.identity
+            (tunnel, tunnel.lock)
+            for tunnel in found.values()
+            if tunnel.lock is not None and same(actor, tunnel.identity)
         ]
 
     def _held(self, tunnel: Tunnel) -> list[str]:
@@ -291,7 +304,7 @@ class ServerContext:
         host, path = host.partition(":")[0].lower(), f"/{path}"
         labels = host_labels(host, self.domain)
         tunnel = None if labels is None else self.registry.resolve(labels)
-        if tunnel is None or tunnel.lock is None or actor != tunnel.identity:
+        if tunnel is None or tunnel.lock is None or not same(actor, tunnel.identity):
             return {"error": f"no locked tunnel of yours serves {host or address!r}"}
         if not safe_path(path):
             return {"error": f"a link can't land on {path!r}"}
@@ -311,6 +324,90 @@ class ServerContext:
         """Ends `who`'s password or link in every locked tunnel of `actor`'s, logging out whoever used it."""
         ended = [self._held(tunnel) for tunnel, lock in self._locked(actor) if lock.end(who)]
         return {"who": who, "ended": ended}
+
+    # Users
+
+    def _acting(self, actor: Session, command: int | None) -> dict[str, Any]:
+        """Who a change to users is by, and from where, as its events record it."""
+        return {
+            **acting(actor.identity), "session": actor.id, "transport": actor.transport, "address": actor.peer.host,
+            "command": command,
+        }  # fmt: skip
+
+    async def user_listing(self, actor: Session) -> dict[str, Any]:
+        """Every user, for an admin."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can list users"}
+        return {"users": await self.users.listing(), "memory": self.users.memory}
+
+    async def invite(self, actor: Session, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
+        """A one-time code that lets someone set up their own login as a new user, or a forgotten one again."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can invite"}
+        seconds = request.get("expires", INVITE_SECONDS)
+        if type(seconds) is not int:
+            return {"error": "an invite's expiry is in seconds"}
+        name = str(request["name"])
+        try:
+            code, expires = await self.users.invite(name, self._acting(actor, command), seconds, command)
+        except UserError as exc:
+            return {"error": str(exc)}
+        log.info("%s invited %s", actor.identity.user, name)
+        return {"name": name, "code": code, "expires": expires, "memory": self.users.memory}
+
+    async def set_admin(self, actor: Session, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
+        """Makes a database user an admin, or not; an admin the settings make stays one."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can change who is one"}
+        name, admin = str(request["name"]), bool(request["admin"])
+        try:
+            changed = await self.users.set_admin(name, admin, self._acting(actor, command))
+        except UserError as exc:
+            return {"error": str(exc)}
+        # Still one by the settings' rules, whatever the database says.
+        still = not admin and any(identity in self.policy.admins for identity in self.users.identities(name))
+        return {"name": name, "admin": admin, "changed": changed, "still": still, "memory": self.users.memory}
+
+    async def remove_user(self, actor: Session, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
+        """Stops a database user logging in, and ends their sessions."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can remove users"}
+        name = str(request["name"])
+        try:
+            await self.users.remove(name, self._acting(actor, command))
+        except UserError as exc:
+            return {"error": str(exc)}
+        ended = []
+        for session in self.sessions:
+            if session.identity.user == name:
+                session.ended_by = command
+                session.end(f"{name} was removed by {actor.identity.user}")
+                ended.append(session.id)
+        log.info("%s removed %s", actor.identity.user, name)
+        return {"name": name, "ended": ended}
+
+    async def join(self, request: dict[str, Any], transport: str, peer: Peer) -> dict[str, Any]:
+        """Sets up the login an invite is for, before any login: a password, a key, or both."""
+        password = request.get("password")
+        key = None
+        if (line := request.get("public_key")) is not None:
+            try:
+                found = asyncssh.import_public_key(str(line))
+            except asyncssh.KeyImportError, ValueError:
+                return {"error": "that public key can't be read"}
+            label = str(request.get("label") or found.get_comment() or "key")
+            key = Key(found.export_public_key().decode().strip(), found.get_fingerprint(), label)
+        hashed = None if password is None else await asyncio.to_thread(PasswordHasher().hash, str(password))
+        alias = request.get("alias")
+        context = {"by": "join", "transport": transport, "address": peer.host}
+        try:
+            name = await self.users.join(
+                str(request["code"]), hashed, key, None if alias is None else str(alias), context
+            )
+        except UserError as exc:
+            return {"error": str(exc)}
+        log.info("%s joined from %s", name, peer.host)
+        return {"name": name}
 
 
 def lock_record(lock: Lock) -> dict[str, Any]:
