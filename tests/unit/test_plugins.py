@@ -25,7 +25,7 @@ def test_unknown_plugin_lists_installed_ones() -> None:
 def test_missing_plugin_setting_names_the_variable() -> None:
     with pytest.raises(ConfigError) as error:
         plugins.load("auth", "password", {})
-    assert str(error.value) == f"missing required setting(s): {PREFIX}AUTH_PASSWORD_HASH"
+    assert str(error.value) == f"missing required setting(s): {PREFIX}AUTH_PASSWORD_USERS"
 
 
 def test_plugin_errors_name_the_plugin() -> None:

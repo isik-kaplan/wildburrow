@@ -537,6 +537,15 @@ async def test_logins_are_welcomed_by_name(start_server: StartServer, ws_env, he
         assert protocol.decode(await ws.recv()) == {"type": "welcome", "identity": identity, "features": FEATURES}
 
 
+@pytest.mark.parametrize("username", ["mallory", "Alice"])
+async def test_a_password_logs_in_only_users_it_belongs_to(start_server: StartServer, ws_env, username: str) -> None:
+    running = await start_server(**ws_env)
+    async with await raw_control(running) as ws:
+        await ws.send(protocol.encode("hello", method="password", username=username, password=PASSWORD))
+        await asyncio.wait_for(ws.wait_closed(), TIMEOUT)
+        assert (ws.close_code, ws.close_reason) == (protocol.CLOSE_AUTH_FAILED, "authentication failed")
+
+
 async def test_binds_are_answered_in_full(start_server: StartServer, ws_env, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO)
     running = await start_server(**ws_env)

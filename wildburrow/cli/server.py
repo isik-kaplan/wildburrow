@@ -11,6 +11,7 @@ from typing import Any, get_type_hints
 import click
 
 from wildburrow import envfile
+from wildburrow.auth.base import USER_NAME
 from wildburrow.cli import ask
 from wildburrow.cli.errors import Failure
 from wildburrow.config import FILE_SUFFIX, PREFIX, SECRET, SHOWN
@@ -195,18 +196,24 @@ def passwords() -> None:
 
 
 @passwords.command("hash")
-def hash_password() -> int:
-    """Print an argon2 hash of a password, for WILDBURROW_AUTH_PASSWORD_HASH."""
-    return _hash_password()
+@click.argument("name")
+def hash_password(name: str) -> int:
+    """Print a user's line for WILDBURROW_AUTH_PASSWORD_USERS.
+
+    The line is NAME and an argon2 hash of the password typed for them; each user gets their own.
+    """
+    return _hash_password(name)
 
 
-def _hash_password() -> int:
+def _hash_password(name: str) -> int:
+    if not USER_NAME.fullmatch(name):
+        raise Failure(f"{name!r} can't be a user's name: it has to be 1-64 characters, with no spaces or colons", 2)
     try:
         from argon2 import PasswordHasher
     except ImportError:
         raise Failure(SERVER_EXTRA, 2) from None
-    password = getpass.getpass("password: ")
+    password = getpass.getpass(f"password for {name}: ")
     if password != getpass.getpass("again: "):
         raise Failure("passwords do not match")
-    click.echo(PasswordHasher().hash(password))
+    click.echo(f"{name}:{PasswordHasher().hash(password)}")
     return 0

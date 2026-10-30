@@ -60,6 +60,7 @@ one is.
 | `key`, `token`, `password` | Everyone logging in with that method |
 | `key:SHA256:...` or `key:COMMENT` | One key, by fingerprint or its comment in the authorized keys |
 | `token:NAME` | One token holder |
+| `password:NAME` | One password user |
 | `all` | Everyone who can log in |
 | `none` | No one |
 
@@ -81,14 +82,13 @@ won't start if it does.
 
 ### What counts as your own
 
-The same identity: the same key, the same token holder (any of their tokens), or the same name line in
-`WILDBURROW_AUTH_TOKEN_HASHES`. Everyone logged in with the password counts as one, since the password lets anyone pick
-any name.
+The same identity: the same key, the same token holder (any of their tokens), the same name line in
+`WILDBURROW_AUTH_TOKEN_HASHES`, or the same user in `WILDBURROW_AUTH_PASSWORD_USERS`.
 
 ### Before widening them
 
 - `ADMINS=token`, `password` or `all` makes a credential that can be copied into an admin credential: anyone holding a
-  copy of the token, or the password, becomes an admin. An SSH key's private half stays on its machine.
+  copy of the token, or a password, becomes an admin. An SSH key's private half stays on its machine.
 - `KICK=all` lets any admin end every other admin's tunnels.
 - `SEE=admins` or `all` shows admins who is connected, and from where.
 

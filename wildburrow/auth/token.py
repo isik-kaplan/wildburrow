@@ -7,6 +7,7 @@ import asyncssh
 
 from wildburrow import tokens
 from wildburrow.auth import sshsig
+from wildburrow.auth.base import lines
 from wildburrow.config import SHOWN, ConfigError
 from wildburrow.core.sessions import GRACE_SECONDS
 from wildburrow.core.types import Identity, Peer, TokenCredential
@@ -57,13 +58,9 @@ class TokenAuth:
         return Identity(grant.name, "token", f"signed:{grant.name}", grant.names, grant.expires, grant.id)
 
 
-def _lines(text: str) -> list[str]:
-    return [line for line in (raw.strip() for raw in text.splitlines()) if line and not line.startswith("#")]
-
-
 def _hashes(text: str) -> dict[str, str]:
     names = {}
-    for line in _lines(text):
+    for line in lines(text):
         name, sep, hexdigest = line.rpartition(":")
         if not sep or not name or len(hexdigest) != 64 or not all(c in "0123456789abcdef" for c in hexdigest):
             raise ConfigError(f"hashes: expected 'name:sha256hex', got {line[:40]!r}")
@@ -74,7 +71,7 @@ def _hashes(text: str) -> dict[str, str]:
 def _signers(text: str) -> dict[bytes, str]:
     """Each key's public data and fingerprint."""
     signers = {}
-    for line in _lines(text):
+    for line in lines(text):
         try:
             key = asyncssh.import_public_key(line)
         except asyncssh.KeyImportError, ValueError:

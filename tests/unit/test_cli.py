@@ -186,7 +186,7 @@ def block_import(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     [
         (["serve"], "wildburrow.config"),
         (["service", "install"], "wildburrow.config"),
-        (["passwords", "hash"], "argon2"),
+        (["passwords", "hash", "alice"], "argon2"),
     ],
 )
 def test_server_commands_need_the_extra(
@@ -200,15 +200,25 @@ def test_server_commands_need_the_extra(
 def test_hash_password(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     prompts: list[str] = []
     monkeypatch.setattr(server_cli.getpass, "getpass", lambda prompt: prompts.append(prompt) or "pw")
-    assert cli.main(["passwords", "hash"]) == 0
-    assert PasswordHasher().verify(capsys.readouterr().out.strip(), "pw")
-    assert prompts == ["password: ", "again: "]
+    assert cli.main(["passwords", "hash", "alice"]) == 0
+    name, hashed = capsys.readouterr().out.strip().split(":")
+    assert name == "alice"
+    assert PasswordHasher().verify(hashed, "pw")
+    assert prompts == ["password for alice: ", "again: "]
+
+
+@pytest.mark.parametrize("name", ["", "a b", "a:b", "a" * 65])
+def test_hash_password_needs_a_name_that_fits_a_line(name: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["passwords", "hash", name]) == 2
+    assert capsys.readouterr().err == (
+        f"{name!r} can't be a user's name: it has to be 1-64 characters, with no spaces or colons\n"
+    )
 
 
 def test_hash_password_mismatch(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     answers = iter(["one", "two"])
     monkeypatch.setattr(server_cli.getpass, "getpass", lambda prompt: next(answers))
-    assert cli.main(["passwords", "hash"]) == 1
+    assert cli.main(["passwords", "hash", "alice"]) == 1
     assert capsys.readouterr().err == "passwords do not match\n"
 
 
@@ -264,7 +274,7 @@ def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
 ) -> None:
     environ = {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
     monkeypatch.setattr(server_cli.os, "environ", environ)
-    typed(ENTER, "tunnel.example.com", ENTER, ENTER, "$argon2id$hash", ENTER, ENTER, "cf-token", ENTER)
+    typed(ENTER, "tunnel.example.com", ENTER, ENTER, "alice:$argon2id$hash", ENTER, ENTER, "cf-token", ENTER)
     assert cli.main(["serve", "--dns", "cloudflare", "--auth-key-authorized-keys", "ssh-ed25519 AAAA"]) == 0
     assert served == [
         environ
@@ -272,13 +282,13 @@ def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
             f"{PREFIX}DNS": "cloudflare",
             f"{PREFIX}AUTH_KEY_AUTHORIZED_KEYS": "ssh-ed25519 AAAA",
             f"{PREFIX}DOMAIN": "tunnel.example.com",
-            f"{PREFIX}AUTH_PASSWORD_HASH": "$argon2id$hash",
+            f"{PREFIX}AUTH_PASSWORD_USERS": "alice:$argon2id$hash",
             f"{PREFIX}DNS_CLOUDFLARE_API_TOKEN": "cf-token",
         }
     ]
     assert typed.showed(
         f"? {PREFIX}DOMAIN tunnel.example.com",
-        f"? {PREFIX}AUTH_PASSWORD_HASH $argon2id$hash",
+        f"? {PREFIX}AUTH_PASSWORD_USERS alice:$argon2id$hash",
         f"? {PREFIX}DNS_CLOUDFLARE_API_TOKEN ********",
     )
     assert environ == {f"{PREFIX}AUTH": "key,password", f"{PREFIX}TRANSPORTS": "ssh,nonesuch"}
@@ -287,8 +297,8 @@ def test_serve_asks_in_a_terminal_for_what_is_required_and_missing(
 @pytest.mark.parametrize(
     "environ",
     [
-        {f"{PREFIX}DOMAIN": "d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_HASH_FILE": "/h"},
-        {f"{PREFIX}DOMAIN_FILE": "/d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_HASH": "h"},
+        {f"{PREFIX}DOMAIN": "d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_USERS_FILE": "/h"},
+        {f"{PREFIX}DOMAIN_FILE": "/d", f"{PREFIX}AUTH": "password", f"{PREFIX}AUTH_PASSWORD_USERS": "h"},
         {f"{PREFIX}DOMAIN": "d", f"{PREFIX}DNS": "cloudflare", f"{PREFIX}DNS_CLOUDFLARE_API_TOKEN_FILE": "/t"},
     ],
 )
@@ -861,7 +871,7 @@ def test_interrupting_a_prompt_aborts(
         raise interrupt
 
     monkeypatch.setattr(server_cli.getpass, "getpass", getpass)
-    assert cli.main(["passwords", "hash"]) == 1
+    assert cli.main(["passwords", "hash", "alice"]) == 1
     assert capsys.readouterr().err == "aborted\n"
 
 

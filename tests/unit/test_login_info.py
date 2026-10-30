@@ -106,7 +106,7 @@ def server_env(tmp_path: Path, credentials: Credentials, **overrides: str) -> di
         f"{config.PREFIX}TRANSPORTS": "ssh,websocket",
         f"{config.PREFIX}AUTH": "token,password,key",
         f"{config.PREFIX}AUTH_KEY_AUTHORIZED_KEYS": credentials.public_key,
-        f"{config.PREFIX}AUTH_PASSWORD_HASH": credentials.password_hash,
+        f"{config.PREFIX}AUTH_PASSWORD_USERS": credentials.password_users,
         f"{config.PREFIX}AUTH_TOKEN_HASHES": "friend:" + "a" * 64,
         **{f"{config.PREFIX}{key}": value for key, value in overrides.items()},
     }

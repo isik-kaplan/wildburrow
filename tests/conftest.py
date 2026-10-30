@@ -19,6 +19,8 @@ from wildburrow.server import Server
 
 DOMAIN = "tunnel.test"
 PASSWORD = "correct horse battery staple"
+# The names the tests log in under by password.
+PASSWORD_USERS = ("tester", "alice")
 TIMEOUT = 10
 
 
@@ -50,6 +52,11 @@ class Credentials:
     askpass: Path
     wrong_askpass: Path
     password_hash: str = field(repr=False)
+
+    @property
+    def password_users(self) -> str:
+        """Everyone the tests log in as by password, each with the one test password."""
+        return "".join(f"{name}:{self.password_hash}\n" for name in PASSWORD_USERS)
 
 
 def _keygen(path: Path, comment: str) -> None:
@@ -138,7 +145,7 @@ async def start_server(tmp_path: Path, credentials: Credentials) -> AsyncIterato
                 "WILDBURROW_SSH_PORT": "0",
                 "WILDBURROW_AUTH": "key,password",
                 "WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS": credentials.public_key,
-                "WILDBURROW_AUTH_PASSWORD_HASH": credentials.password_hash,
+                "WILDBURROW_AUTH_PASSWORD_USERS": credentials.password_users,
                 **overrides,
             }
             server = Server(config.load(config.ServerSettings, env, config.PREFIX), env)

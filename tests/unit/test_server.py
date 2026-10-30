@@ -41,7 +41,9 @@ def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
         f"{config.PREFIX}SSH_HOST": "127.0.0.1",
         f"{config.PREFIX}SSH_PORT": "0",
         f"{config.PREFIX}AUTH": "password",
-        f"{config.PREFIX}AUTH_PASSWORD_HASH": "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA",
+        f"{config.PREFIX}AUTH_PASSWORD_USERS": (
+            "alice:$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
+        ),
         **{f"{config.PREFIX}{key}": value for key, value in overrides.items()},
     }
 

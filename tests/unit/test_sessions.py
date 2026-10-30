@@ -27,7 +27,6 @@ from wildburrow.core.sessions import (
     Sessions,
     describe,
     level,
-    same,
 )
 from wildburrow.core.types import Identity, Peer
 from wildburrow.server import Server
@@ -59,12 +58,13 @@ def test_unknown_levels(raw: str) -> None:
         level("WILDBURROW_SEE", raw)
 
 
-def test_same_identity() -> None:
-    assert same(ALICE, Identity("alice", "token", "signed:alice"))
-    assert not same(ALICE, BOB)
-    assert not same(LAPTOP, Identity("laptop", "token", "SHA256:laptop"))
-    assert same(Identity("a", "password", "a"), Identity("b", "password", "b"))
-    assert not same(Identity("a", "password", "a"), Identity("a", "key", "a"))
+def test_identities_are_told_apart_by_method_and_subject() -> None:
+    assert Identity("alice", "token", "signed:alice") == ALICE
+    assert ALICE != BOB
+    assert Identity("laptop", "token", "SHA256:laptop") != LAPTOP
+    # Each password user has their own password, so each is their own identity.
+    assert Identity("a", "password", "a") != Identity("b", "password", "b")
+    assert Identity("a", "password", "a") != Identity("a", "key", "a")
 
 
 def admins(*rules: str, signers: tuple[str, ...] = ()) -> Admins:
@@ -89,6 +89,8 @@ def admins(*rules: str, signers: tuple[str, ...] = ()) -> Admins:
         (("key:phone",), {"phone"}),
         (("key:alice",), set()),
         (("signers", "token:bob"), {"phone", "bob"}),
+        (("password:pw",), {"pw"}),
+        (("password:other",), set()),
     ],
 )
 def test_admin_rules(rules: tuple[str, ...], members: set[str]) -> None:
@@ -109,8 +111,7 @@ def test_no_admins_by_default() -> None:
         (("ldap",), "WILDBURROW_ADMINS: 'ldap' is neither a rule nor one of the auth methods; expected none, all, "
                     "signers, key, password, token"),
         (("ldap:x",), "WILDBURROW_ADMINS: 'ldap:x' is neither a rule"),
-        (("password:bob",), "WILDBURROW_ADMINS: 'password:bob' can't name one person; anyone with the password"),
-        (("token:",), "WILDBURROW_ADMINS: 'token:' can't name one person"),
+        (("token:",), "WILDBURROW_ADMINS: 'token:' names no one; give a name after the colon"),
     ],
 )  # fmt: skip
 def test_admin_rules_that_cant_work(rules: tuple[str, ...], message: str) -> None:

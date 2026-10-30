@@ -1,7 +1,16 @@
+import re
 from collections.abc import Mapping, Sequence
 from typing import ClassVar, Protocol
 
 from wildburrow.core.types import Credential, Identity, Peer
+
+# A name someone logs in under: no spaces, and no colon, which ends it in a settings line.
+USER_NAME = re.compile(r"[^\s:]{1,64}")
+
+
+def lines(text: str) -> list[str]:
+    """A setting's lines, without blank ones and `#` comments."""
+    return [line for line in (raw.strip() for raw in text.splitlines()) if line and not line.startswith("#")]
 
 
 class AuthProvider(Protocol):

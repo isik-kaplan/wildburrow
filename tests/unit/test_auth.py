@@ -15,6 +15,8 @@ from wildburrow.core.types import Identity, PasswordCredential, Peer, PublicKeyC
 PEER = Peer("192.0.2.1", 50000)
 OTHER_PEER = Peer("192.0.2.2", 50000)
 HASH = PasswordHasher().hash("secret")
+# alice and a share the one test password; bob has his own.
+USERS = f"alice:{HASH}\n# a comment\n\nbob:{PasswordHasher().hash('builder')}\na:{HASH}"
 
 
 def public_key(comment: str | None = "laptop") -> asyncssh.SSHKey:
@@ -108,9 +110,25 @@ class Clock:
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
-        (PasswordSettings("plain"), "hash: not an argon2 hash; create one with `wildburrow passwords hash`"),
-        (PasswordSettings(HASH, max_failures=0), "max_failures and block_seconds must be at least 1"),
-        (PasswordSettings(HASH, block_seconds=0), "max_failures and block_seconds must be at least 1"),
+        (PasswordSettings("plain"), "users: expected 'name:argon2hash', got a line starting 'plain'"),
+        (PasswordSettings(HASH), "users: expected 'name:argon2hash', got a line starting '$argon2id$v=19$m=655'"),
+        (PasswordSettings(f":{HASH}"), "users: expected 'name:argon2hash', got a line starting ''"),
+        (PasswordSettings(f"a b:{HASH}"), "users: expected 'name:argon2hash', got a line starting 'a b'"),
+        (
+            PasswordSettings(f"{'a' * 65}:{HASH}"),
+            f"users: expected 'name:argon2hash', got a line starting '{'a' * 20}'",
+        ),
+        (
+            PasswordSettings("alice:plain"),
+            "users: alice's hash isn't an argon2 hash; make one with `wildburrow passwords hash alice`",
+        ),
+        (PasswordSettings(f"alice:{HASH}\nalice:{HASH}"), "users: alice is given twice"),
+        (
+            PasswordSettings(" \n# only a comment"),
+            "users: none given; add a line for each with `wildburrow passwords hash NAME`",
+        ),
+        (PasswordSettings(USERS, max_failures=0), "max_failures and block_seconds must be at least 1"),
+        (PasswordSettings(USERS, block_seconds=0), "max_failures and block_seconds must be at least 1"),
     ],
 )
 def test_password_config_errors(settings: PasswordSettings, message: str) -> None:
@@ -120,19 +138,31 @@ def test_password_config_errors(settings: PasswordSettings, message: str) -> Non
 
 
 def test_password_limits_of_one_are_allowed() -> None:
-    PasswordAuth(PasswordSettings(HASH, max_failures=1, block_seconds=1))
+    PasswordAuth(PasswordSettings(f"{'a' * 64}:{HASH}", max_failures=1, block_seconds=1))
 
 
 async def test_password_accepts_the_right_password() -> None:
-    auth = PasswordAuth(PasswordSettings(HASH))
+    auth = PasswordAuth(PasswordSettings(USERS))
     alice = Identity("alice", "password", "alice")
     assert await auth.authenticate(PasswordCredential("alice", "secret"), PEER) == alice
+    assert await auth.authenticate(PasswordCredential("bob", "builder"), PEER) == Identity("bob", "password", "bob")
     assert await auth.authenticate(PasswordCredential("alice", "Secret"), PEER) is None
+
+
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [("bob", "secret"), ("alice", "builder"), ("mallory", "secret"), ("mallory", ""), ("Alice", "secret")],
+)
+async def test_a_password_logs_in_only_its_own_user(username: str, password: str) -> None:
+    auth = PasswordAuth(PasswordSettings(USERS, max_failures=1))
+    assert await auth.authenticate(PasswordCredential(username, password), PEER) is None
+    # A name no one has counts as a failure, as a wrong password does.
+    assert auth.blocked(PEER.host)
 
 
 async def test_password_blocks_an_address_after_repeated_failures() -> None:
     clock = Clock()
-    auth = PasswordAuth(PasswordSettings(HASH, max_failures=2, block_seconds=60), clock=clock)
+    auth = PasswordAuth(PasswordSettings(USERS, max_failures=2, block_seconds=60), clock=clock)
     for _ in range(2):
         assert await auth.authenticate(PasswordCredential("a", "wrong"), PEER) is None
     assert auth.blocked(PEER.host)
@@ -145,14 +175,14 @@ async def test_password_blocks_an_address_after_repeated_failures() -> None:
 
 
 async def test_password_counts_in_flight_attempts() -> None:
-    auth = PasswordAuth(PasswordSettings(HASH, max_failures=3))
+    auth = PasswordAuth(PasswordSettings(USERS, max_failures=3))
     results = await asyncio.gather(*(auth.authenticate(PasswordCredential("a", "wrong"), PEER) for _ in range(10)))
     assert results == [None] * 10
     assert len(auth._failures[PEER.host]) == 3
 
 
 async def test_success_does_not_count_as_failure() -> None:
-    auth = PasswordAuth(PasswordSettings(HASH, max_failures=1))
+    auth = PasswordAuth(PasswordSettings(USERS, max_failures=1))
     for _ in range(3):
         assert await auth.authenticate(PasswordCredential("a", "secret"), PEER) is not None
 

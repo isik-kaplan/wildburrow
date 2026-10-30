@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Each password user has their own password.** `WILDBURROW_AUTH_PASSWORD_HASH`, one password anyone could log in
+  with under any name, is gone: `WILDBURROW_AUTH_PASSWORD_USERS` takes a `name:argon2hash` line per user, and a
+  password logs in only its own user. `wildburrow passwords hash NAME` prints the line. Each user is now their own
+  identity, for `tunnels`, `kick` and links, and `WILDBURROW_ADMINS` takes `password:NAME`. A server set up with
+  `WILDBURROW_AUTH_PASSWORD_HASH` won't start until it has `WILDBURROW_AUTH_PASSWORD_USERS` instead.
+
 ## [0.5.0] - 2026-10-26
 
 ### Added

@@ -395,7 +395,7 @@ def test_edit_asks_for_keys_whenever_key_auth_is_on(root: Path, typed: Typist) -
 
 
 def test_install_lets_in_the_invokers_keys_alongside_other_methods(root: Path) -> None:
-    install(root, "--auth=password,key", "--auth-password-hash=" + HASH)
+    install(root, "--auth=password,key", "--auth-password-users=alice:" + HASH)
     assert settings(root)[KEYS] == f"# mine\n{LAPTOP}"
 
 

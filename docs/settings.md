@@ -81,11 +81,12 @@ Defaults for every [locked tunnel](locks.md), which a client can change for its 
 | Variable | Default | |
 |---|---|---|
 | `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | `~/.ssh/authorized_keys` | OpenSSH public keys, one per line |
-| `WILDBURROW_AUTH_PASSWORD_HASH` | | argon2 hash from `wildburrow passwords hash` |
+| `WILDBURROW_AUTH_PASSWORD_USERS` | | `name:argon2hash` lines, one per user, from `wildburrow passwords hash NAME` |
 | `WILDBURROW_AUTH_PASSWORD_MAX_FAILURES` | `5` | Failed passwords per address before blocking |
 | `WILDBURROW_AUTH_PASSWORD_BLOCK_SECONDS` | `900` | How long failures count against an address |
 | `WILDBURROW_AUTH_TOKEN_SIGNERS` | | Public keys whose signed tokens are accepted, one per line |
 | `WILDBURROW_AUTH_TOKEN_DENY` | | Ids of signed tokens to refuse before they expire, comma-separated |
 | `WILDBURROW_AUTH_TOKEN_HASHES` | | `name:sha256` lines from `wildburrow tokens new NAME --hash` |
 
-The token plugin needs `SIGNERS`, `HASHES` or both. See [tokens.md](tokens.md).
+Each password user logs in only under their own name, with their own password. The token plugin needs `SIGNERS`,
+`HASHES` or both. See [tokens.md](tokens.md).

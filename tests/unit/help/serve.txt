@@ -98,7 +98,7 @@ auth plugin key:
                                   default: ~/.ssh/authorized_keys
 
 auth plugin password:
-  --auth-password-hash HASH       required
+  --auth-password-users USERS     required
   --auth-password-max-failures MAX_FAILURES
                                   default: 5
   --auth-password-block-seconds BLOCK_SECONDS

@@ -15,8 +15,6 @@ from wildburrow.core.types import Identity, Peer
 GRACE_SECONDS = 60
 ID_BYTES = 6
 EXPIRED = "the token expired"
-# Anyone with the password can log in under any name, so names can't tell its users apart.
-SHARED = "password"
 NONE = "none"
 ALL = "all"
 SIGNERS = "signers"
@@ -38,10 +36,6 @@ def level(var: str, raw: str) -> Level:
         return LEVELS[raw.strip().lower()]
     except KeyError:
         raise ConfigError(f"{var}: expected one of {', '.join(LEVELS)}, got {raw!r}") from None
-
-
-def same(one: Identity, other: Identity) -> bool:
-    return one == other or one.method == other.method == SHARED
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,8 +68,8 @@ class Admins:
                 raise ConfigError(f"{var}: {rule!r} is neither a rule nor one of the auth methods; expected {known}")
             if not sep:
                 methods.add(method)
-            elif method == SHARED or not value:
-                raise ConfigError(f"{var}: {rule!r} can't name one person; anyone with the password picks any name")
+            elif not value:
+                raise ConfigError(f"{var}: {rule!r} names no one; give a name after the colon")
             else:
                 exact.add((method, value))
         keys = frozenset(signers) if SIGNERS in rules else frozenset()
@@ -110,7 +104,7 @@ class Policy:
     def _reaches(self, level: Level, actor: Identity, target: Identity) -> bool:
         if level is Level.NONE:
             return False
-        if same(actor, target):
+        if actor == target:
             return True
         return level >= Level.ADMINS and actor in self.admins and (level is Level.ALL or target not in self.admins)
 
@@ -155,7 +149,7 @@ class Sessions:
 def describe(session: Session, names: list[str], shown_to: Identity, admin: bool) -> dict[str, Any]:
     """What `shown_to` is told about `session`: its address only for admins and for their own."""
     identity = session.identity
-    yours = same(shown_to, identity)
+    yours = shown_to == identity
     entry = {
         "id": session.id,
         "who": identity.name,

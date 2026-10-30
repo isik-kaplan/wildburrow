@@ -12,7 +12,7 @@ from wildburrow.core.indexing import Indexing, indexed
 from wildburrow.core.locks import Lock, Locking, build, entry_id
 from wildburrow.core.names import InvalidName, Name, allows, host_labels, parse_name
 from wildburrow.core.registry import NameTaken, Registry
-from wildburrow.core.sessions import Policy, Session, Sessions, describe, same
+from wildburrow.core.sessions import Policy, Session, Sessions, describe
 from wildburrow.core.types import (
     Credential,
     Destination,
@@ -274,9 +274,7 @@ class ServerContext:
         """The locked tunnels of `actor`'s own identity, each once, with their locks."""
         found = {id(tunnel): tunnel for tunnel in self.registry.holders().values()}
         return [
-            (tunnel, tunnel.lock)
-            for tunnel in found.values()
-            if tunnel.lock is not None and same(actor, tunnel.identity)
+            (tunnel, tunnel.lock) for tunnel in found.values() if tunnel.lock is not None and actor == tunnel.identity
         ]
 
     def _held(self, tunnel: Tunnel) -> list[str]:
@@ -293,7 +291,7 @@ class ServerContext:
         host, path = host.partition(":")[0].lower(), f"/{path}"
         labels = host_labels(host, self.domain)
         tunnel = None if labels is None else self.registry.resolve(labels)
-        if tunnel is None or tunnel.lock is None or not same(actor, tunnel.identity):
+        if tunnel is None or tunnel.lock is None or actor != tunnel.identity:
             return {"error": f"no locked tunnel of yours serves {host or address!r}"}
         if not safe_path(path):
             return {"error": f"a link can't land on {path!r}"}
