@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Breaking
+
+- **`WILDBURROW_AUTH_PASSWORD_HASH` (and `_FILE`) is gone, and a server still given it won't start.** Give each
+  password user a line in `WILDBURROW_AUTH_PASSWORD_USERS` from `wildburrow passwords hash NAME`, or invite them with
+  `wildburrow users invite NAME`. A password now logs in only its own user, so `wildburrow login` needs that user's
+  name.
+- **Keys whose comments share a user are one user's.** `isik@laptop` and `isik@phone` now see, kick and end each
+  other's sessions, tunnels and links. Give keys that belong to different people comments with different users.
+- **`WILDBURROW_ADMINS=key:NAME` also matches every key of user `NAME`**, not only the key whose comment is exactly
+  `NAME`. `key` and `password` on their own also make the keys and passwords invited users join with admins; name your
+  admins to keep them out.
+- **The database file is upgraded to schema 2 when 0.6.0 opens it**, and 0.5.0 won't open it after that. Copy the
+  file first if you might go back.
+
 ### Added
 
 - **Users, and invites.** Everyone who logs in is a user. `wildburrow users invite NAME` gives an admin a one-time code;
