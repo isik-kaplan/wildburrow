@@ -58,7 +58,7 @@ one is.
 |---|---|
 | `signers` | Key logins whose key is also in `WILDBURROW_AUTH_TOKEN_SIGNERS` (the default) |
 | `key`, `token`, `password` | Everyone logging in with that method |
-| `key:SHA256:...`, `key:COMMENT` or `key:USER` | One key, by fingerprint or its comment; or every key of one user |
+| `key:SHA256:...` or `key:USER` | One key, by fingerprint; or every key of one user (see `WILDBURROW_AUTH_KEY_USERS`) |
 | `token:NAME` | One token holder |
 | `password:NAME` | One password user |
 | `all` | Everyone who can log in |
@@ -85,7 +85,7 @@ won't start if it does.
 
 ### What counts as your own
 
-The same user: every key, token and password of theirs, so `isik@laptop` and `isik@phone` reach each other's sessions,
+The same user: every key, token and password of theirs, so isik's laptop and phone keys reach each other's sessions,
 links and tunnels as one person's. See [users.md](users.md) for what makes a user.
 
 ### Before widening them

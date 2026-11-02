@@ -57,7 +57,15 @@ class Admins:
     database: Collection[str] = frozenset()
 
     @classmethod
-    def parse(cls, var: str, rules: Collection[str], auth: Collection[str], signers: Collection[str]) -> Admins:
+    def parse(
+        cls,
+        var: str,
+        rules: Collection[str],
+        auth: Collection[str],
+        signers: Collection[str],
+        comments: Collection[str] = (),
+    ) -> Admins:
+        """The admins `rules` make; `comments` are what keys are shown as, which no rule can name them by."""
         rules = [rule.strip() for rule in rules]
         if NONE in rules:
             if len(rules) > 1:
@@ -77,6 +85,11 @@ class Admins:
                 methods.add(method)
             elif not value:
                 raise ConfigError(f"{var}: {rule!r} names no one; give a name after the colon")
+            elif method == "key" and value in comments:
+                raise ConfigError(
+                    f"{var}: {rule!r} names a key by its comment, which since 0.7.0 is only its label; give the key's "
+                    f"user in {PREFIX}AUTH_KEY_USERS and name that, or give its SHA256 fingerprint"
+                )
             else:
                 exact.add((method, value))
         keys = frozenset(signers) if SIGNERS in rules else frozenset()
@@ -87,7 +100,6 @@ class Admins:
             self.everyone
             or identity.user in self.database
             or identity.method in self.methods
-            or (identity.method, identity.name) in self.exact
             or (identity.method, identity.user) in self.exact
             or (identity.method, identity.subject) in self.exact
             or (identity.method == "key" and identity.subject in self.keys)

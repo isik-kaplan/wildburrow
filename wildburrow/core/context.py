@@ -338,7 +338,28 @@ class ServerContext:
         """Every user, for an admin."""
         if actor.identity not in self.policy.admins:
             return {"error": "only an admin can list users"}
-        return {"users": await self.users.listing(), "memory": self.users.memory}
+        settings: dict[str, list[Identity]] = {}
+        for login in self.authenticator.logins():
+            settings.setdefault(login.user, []).append(login)
+        # The settings' rules alone, so an admin they make shows apart from one made in the database.
+        rules = dataclasses.replace(self.policy.admins, database=frozenset())
+        found = []
+        for user in await self.users.listing():
+            logins = self._logins(user, settings)
+            found.append({
+                **user, "logins": [login_label(login) for login in logins],
+                "admin_logins": [login_label(login) for login in logins if login in rules],
+            })  # fmt: skip
+        return {"users": found, "memory": self.users.memory}
+
+    def _logins(self, user: dict[str, Any], settings: dict[str, list[Identity]]) -> list[Identity]:
+        """How `user` logs in: by the settings, a signed token, or what they joined with."""
+        name = user["name"]
+        if user["source"] == "database":
+            return self.users.identities(name)
+        if user["source"] == "token":
+            return [Identity(name, "token", f"signed:{name}")]
+        return settings.get(name, [])
 
     async def invite(self, actor: Session, request: dict[str, Any], command: int | None = None) -> dict[str, Any]:
         """A one-time code that lets someone set up their own login as a new user, or a forgotten one again."""
@@ -408,6 +429,13 @@ class ServerContext:
             return {"error": str(exc)}
         log.info("%s joined from %s", name, peer.host)
         return {"name": name}
+
+
+def login_label(identity: Identity) -> str:
+    """A login as `users` lists it: `password`, `token`, or `key (laptop)` by the device it's on."""
+    if identity.method != "key":
+        return identity.method
+    return f"key ({identity.name.removeprefix(f'{identity.user}@')})"
 
 
 def lock_record(lock: Lock) -> dict[str, Any]:

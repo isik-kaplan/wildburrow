@@ -40,6 +40,10 @@ class TokenAuth:
         """The users the token hashes name; signed tokens' holders are met as they log in."""
         return set(self._names.values())
 
+    def logins(self) -> list[Identity]:
+        """The identity each token hash logs in as."""
+        return [Identity(name, "token", hexdigest) for hexdigest, name in self._names.items()]
+
     async def authenticate(self, credential: TokenCredential, peer: Peer) -> Identity | None:
         if credential.token.startswith(tokens.PREFIX):
             return self._signed(credential.token)

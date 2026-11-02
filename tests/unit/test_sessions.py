@@ -91,6 +91,8 @@ def admins(*rules: str, signers: tuple[str, ...] = ()) -> Admins:
         (("signers", "token:bob"), {"phone", "bob"}),
         (("password:pw",), {"pw"}),
         (("key:isik",), {"isik@laptop"}),
+        # A key's name is only what it's shown as.
+        (("key:isik@laptop",), set()),
         (("password:other",), set()),
     ],
 )
@@ -125,6 +127,16 @@ def test_no_admins_by_default() -> None:
 def test_admin_rules_that_cant_work(rules: tuple[str, ...], message: str) -> None:
     with pytest.raises(ConfigError, match="^" + re.escape(message)):
         admins(*rules)
+
+
+def test_an_admin_rule_cant_name_a_key_by_its_comment() -> None:
+    with pytest.raises(ConfigError) as error:
+        Admins.parse("WILDBURROW_ADMINS", ("key:SHA256:x", "key:isik@laptop"), AUTH, (), {"isik@laptop"})
+    assert str(error.value) == (
+        "WILDBURROW_ADMINS: 'key:isik@laptop' names a key by its comment, which since 0.7.0 is only its label; give "
+        "the key's user in WILDBURROW_AUTH_KEY_USERS and name that, or give its SHA256 fingerprint"
+    )
+    assert Admins.parse("WILDBURROW_ADMINS", ("password:isik@laptop",), AUTH, (), {"isik@laptop"})
 
 
 def test_admin_rules_name_methods_the_server_runs() -> None:

@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking
+
+- **A key's comment no longer names its user.** `WILDBURROW_AUTH_KEY_USERS` does, with a `name:SHA256:fingerprint`
+  line per key (`ssh-keygen -lf KEY.pub` prints one). A key no line names is its own user, named by its fingerprint,
+  so keys that 0.6.0 grouped by comment (`isik@laptop`, `isik@phone`) are apart until named. The comment is only what
+  the key is shown as. A comment like `name@example.com` made its owner `name` in 0.6.0.
+- **Admin rules no longer match a key's comment.** `WILDBURROW_ADMINS=key:NAME` matches the keys of user `NAME`, and
+  `key:SHA256:...` one key. A server whose `key:` rule names only a key's comment won't start, saying what to use
+  instead.
+
+### Fixed
+
+- **`wildburrow users` shows who the settings make admins**, not only the users promoted in the database: `by the
+  settings`, or `only` the logins it makes admins when not all. `LOGS IN WITH` now lists settings users' logins too.
+  A 0.6.0 server's listing still shows as before.
+
 ## [0.6.0] - 2026-10-31
 
 ### Breaking

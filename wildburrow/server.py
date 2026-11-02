@@ -191,7 +191,10 @@ def recorded(settings: config.ServerSettings) -> dict[str, Any]:
 
 def policy(settings: config.ServerSettings, authenticator: Authenticator, users: Users) -> Policy:
     """Who is an admin, by the settings or made one in the database, and how far anyone sees and ends sessions."""
-    admins = Admins.parse(f"{config.PREFIX}ADMINS", settings.admins, settings.auth, authenticator.signers())
+    admins = Admins.parse(
+        f"{config.PREFIX}ADMINS", settings.admins, settings.auth, authenticator.signers(),
+        authenticator.comments() - authenticator.users(),
+    )  # fmt: skip
     admins = dataclasses.replace(admins, database=users.admins)
     see, kick = level(f"{config.PREFIX}SEE", settings.see), level(f"{config.PREFIX}KICK", settings.kick)
     return Policy(admins, see, kick)

@@ -47,6 +47,10 @@ class PasswordAuth:
         """The users these settings let in."""
         return set(self._users)
 
+    def logins(self) -> list[Identity]:
+        """The identity each password line logs in as."""
+        return [Identity(name, "password", name) for name in self._users]
+
     def look_up(self, users: Users) -> None:
         self.database = users.password
 

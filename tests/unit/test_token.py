@@ -30,6 +30,8 @@ async def test_tokens_match_by_hash() -> None:
     assert await auth.authenticate(TokenCredential(token), PEER) == Identity("name:with:colons", "token", digest(token))
     assert await auth.authenticate(TokenCredential(token + "x"), PEER) is None
     assert await auth.authenticate(TokenCredential(digest(token)), PEER) is None
+    # The identity it logs in as, known before anyone does.
+    assert auth.logins() == [Identity("name:with:colons", "token", digest(token))]
 
 
 @pytest.mark.parametrize(

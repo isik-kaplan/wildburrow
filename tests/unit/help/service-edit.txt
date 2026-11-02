@@ -94,6 +94,7 @@ transport plugin websocket:
 auth plugin key:
   --auth-key-authorized-keys AUTHORIZED_KEYS
                                   default: ~/.ssh/authorized_keys
+  --auth-key-users USERS          optional
 
 auth plugin password:
   --auth-password-users USERS     optional

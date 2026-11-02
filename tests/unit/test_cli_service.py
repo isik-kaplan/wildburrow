@@ -297,12 +297,12 @@ def test_install_asks_who_sees_and_ends_sessions(root: Path, typed: Typist) -> N
 
 
 def test_ending_is_offered_only_as_far_as_seeing(root: Path, typed: Typist) -> None:
-    install(root, "--see=own", "--kick=own", "--admins=key,key:laptop")
+    install(root, "--see=own", "--kick=own", "--admins=key,key:isik")
     typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, DOWN, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0
-    assert settings(root)[f"{P}ADMINS"] == "key,key:laptop"
+    assert settings(root)[f"{P}ADMINS"] == "key,key:isik"
     assert (settings(root)[f"{P}SEE"], settings(root)[f"{P}KICK"]) == ("all", "own")
-    assert typed.showed("? Admins key,key:laptop")
+    assert typed.showed("? Admins key,key:isik")
     install(root, "--force", "--see=all", "--kick=all")
     typed(ENTER, ENTER, ENTER, ENTER, ENTER, DOWN, ENTER, ENTER, ENTER)
     assert cli.main(["service", "edit"]) == 0

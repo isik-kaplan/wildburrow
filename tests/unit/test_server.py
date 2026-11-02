@@ -48,6 +48,17 @@ def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
     }
 
 
+def test_an_admin_rule_naming_a_key_by_its_comment_stops_the_server(tmp_path: Path) -> None:
+    line = asyncssh.generate_private_key("ssh-ed25519", comment="isik@laptop").export_public_key().decode()
+    values = env(tmp_path, AUTH="key", AUTH_KEY_AUTHORIZED_KEYS=line, ADMINS="key:isik@laptop")
+    with pytest.raises(config.ConfigError, match=r"^WILDBURROW_ADMINS: 'key:isik@laptop' names a key by its comment"):
+        Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+    fingerprint = asyncssh.import_public_key(line).get_fingerprint()
+    # Unless it's also the user some key logs in.
+    values |= {f"{config.PREFIX}AUTH_KEY_USERS": f"isik@laptop:{fingerprint}"}
+    Server(config.load(config.ServerSettings, values, config.PREFIX), values)
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

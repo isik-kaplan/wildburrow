@@ -51,17 +51,32 @@ def _answered(request: Any, config: ClientConfig, *args: Any) -> dict[str, Any]:
 
 
 def _logins(user: dict[str, Any]) -> str:
-    found = (["password"] if user["password"] else []) + [f"key ({label})" for label in user["keys"]]
+    found = list(user.get("logins", ()))
+    if "logins" not in user:
+        # A 0.6.0 server says only what invited users joined with.
+        found = (["password"] if user["password"] else []) + [f"key ({label})" for label in user["keys"]]
     if user["invited_until"] is not None:
         found.append(f"invited until {when(user['invited_until'])}")
     return ", ".join(found) or "-"
+
+
+def _admin(user: dict[str, Any]) -> str:
+    """Whether `user` is an admin, and by what: made one in the database, or by the server's settings."""
+    by_settings = user.get("admin_logins")
+    if user["admin"]:
+        return "yes"
+    if by_settings and by_settings == user["logins"]:
+        return "by the settings"
+    if by_settings:
+        return f"only {', '.join(by_settings)}"
+    return "no"
 
 
 def _list(config: ClientConfig) -> int:
     answer = _answered(websocket.users, config)
     rows = [
         (
-            user["name"], user["alias"] or "-", SOURCES[user["source"]], "yes" if user["admin"] else "no",
+            user["name"], user["alias"] or "-", SOURCES[user["source"]], _admin(user),
             "removed" if user["gone"] else _logins(user),
         )
         for user in answer["users"]

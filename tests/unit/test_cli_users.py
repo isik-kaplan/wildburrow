@@ -66,6 +66,25 @@ def test_users_are_listed_with_how_they_log_in(server: Server, capsys: pytest.Ca
     assert server.calls == [("users", "s.example.com")]
 
 
+def test_admins_are_shown_by_what_makes_them_one(server: Server, capsys: pytest.CaptureFixture[str]) -> None:
+    settings = {**CAROL, "alias": None, "source": "settings", "admin": False, "password": False, "keys": []}
+    server.answers["users"] = {"users": [
+        {**CAROL, "logins": ["password"], "admin_logins": ["password"]},
+        {**settings, "name": "dave", "logins": ["key (dave's)"], "admin_logins": ["key (dave's)"]},
+        {**settings, "name": "isik", "logins": ["key (laptop)", "key (phone)", "password"],
+         "admin_logins": ["key (laptop)", "password"]},
+        {**settings, "name": "tess", "source": "token", "logins": ["token"], "admin_logins": []},
+    ], "memory": False}  # fmt: skip
+    assert cli.main(["users"]) == 0
+    assert capsys.readouterr().out == (
+        "USER   ALIAS  FROM      ADMIN                        LOGS IN WITH\n"
+        "carol  c      invited   yes                          password\n"
+        "dave   -      settings  by the settings              key (dave's)\n"
+        "isik   -      settings  only key (laptop), password  key (laptop), key (phone), password\n"
+        "tess   -      token     no                           token\n"
+    )
+
+
 def test_a_server_in_memory_is_warned_of(server: Server, capsys: pytest.CaptureFixture[str]) -> None:
     server.answers["users"] = {"users": [], "memory": True}
     assert cli.main(["users"]) == 0

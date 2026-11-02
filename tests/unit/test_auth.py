@@ -1,5 +1,6 @@
 import asyncio
 import pwd
+import re
 from pathlib import Path
 
 import asyncssh
@@ -214,15 +215,40 @@ def test_password_is_hidden_from_repr() -> None:
     assert "secret" not in repr(PasswordCredential("u", "secret"))
 
 
-async def test_a_keys_comment_names_its_user_and_device() -> None:
-    laptop, phone, bare = public_key("isik@laptop"), public_key("isik@phone@home"), public_key("@nobody")
-    auth = KeyAuth(KeySettings("\n".join(map(openssh_line, (laptop, phone, bare)))))
-    found = await auth.authenticate(PublicKeyCredential("u", laptop.public_data), PEER)
-    assert found == Identity("isik@laptop", "key", laptop.get_fingerprint())
-    assert found is not None
-    assert found.user == "isik"
-    assert auth.users() == {"isik", "@nobody"}
-    assert auth.fingerprints() == {key.get_fingerprint() for key in (laptop, phone, bare)}
+async def test_a_keys_user_is_named_in_the_settings_and_its_comment_is_only_its_label() -> None:
+    laptop, phone, other, bare = public_key("isik@laptop"), public_key(None), public_key("isik@x.com"), public_key(None)
+    users = f"# who each key is\nisik:{laptop.get_fingerprint()}\nisik:{phone.get_fingerprint()}"
+    auth = KeyAuth(KeySettings("\n".join(map(openssh_line, (laptop, phone, other, bare))), users))
+    found = [await auth.authenticate(PublicKeyCredential("u", key.public_data), PEER) for key in (laptop, phone, other)]
+    assert [(identity.name, identity.user) for identity in found if identity is not None] == [
+        ("isik@laptop", "isik"), ("isik", "isik"), ("isik@x.com", other.get_fingerprint()),
+    ]  # fmt: skip
+    assert auth.users() == {"isik", other.get_fingerprint(), bare.get_fingerprint()}
+    assert auth.fingerprints() == {key.get_fingerprint() for key in (laptop, phone, other, bare)}
+    assert auth.comments() == {"isik@laptop", "isik@x.com"}
+    assert auth.logins() == [
+        Identity("isik@laptop", "key", laptop.get_fingerprint()), Identity("isik", "key", phone.get_fingerprint()),
+        Identity("isik@x.com", "key", other.get_fingerprint()),
+        Identity(bare.get_fingerprint(), "key", bare.get_fingerprint()),
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("users", "message"),
+    [
+        ("isik", "^users: expected 'name:SHA256:fingerprint', got 'isik'$"),
+        ("a b:SHA256:x", "^users: expected 'name:SHA256:fingerprint'"),
+        ("isik:MD5:x", "^users: expected 'name:SHA256:fingerprint'"),
+        ("x" * 70, f"^users: expected 'name:SHA256:fingerprint', got '{'x' * 60}'$"),
+        ("isik:SHA256:nope", r"^users: SHA256:nope \(isik's\) isn't one of the authorized keys$"),
+        ("isik:{fp}\ncarol:{fp}", "^users: {fp} is given twice$"),
+    ],
+)
+def test_key_users_that_cant_be_are_refused(users: str, message: str) -> None:
+    key = public_key()
+    fingerprint = key.get_fingerprint()
+    with pytest.raises(ConfigError, match=message.replace("{fp}", re.escape(fingerprint))):
+        KeyAuth(KeySettings(openssh_line(key), users.replace("{fp}", fingerprint)))
 
 
 class Joined:
@@ -255,8 +281,14 @@ async def test_database_users_log_in_by_their_password_or_key() -> None:
 
 def test_the_authenticator_gathers_the_settings_users_and_keys() -> None:
     key = public_key("isik@laptop")
-    found = Authenticator(
-        [KeyAuth(KeySettings(openssh_line(key))), PasswordAuth(PasswordSettings(USERS)), Fixed((), None)]
-    )
+    found = Authenticator([
+        KeyAuth(KeySettings(openssh_line(key), f"isik:{key.get_fingerprint()}")), PasswordAuth(PasswordSettings(USERS)),
+        Fixed((), None),
+    ])  # fmt: skip
     assert found.users() == {"isik", "alice", "bob", "a"}
     assert found.fingerprints() == {key.get_fingerprint()}
+    assert found.comments() == {"isik@laptop"}
+    assert PasswordAuth(PasswordSettings(f"alice:{HASH}")).logins() == [Identity("alice", "password", "alice")]
+    assert [(login.method, login.user) for login in found.logins()] == [
+        ("key", "isik"), ("password", "alice"), ("password", "bob"), ("password", "a"),
+    ]  # fmt: skip

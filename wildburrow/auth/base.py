@@ -49,6 +49,14 @@ class Authenticator:
             *(provider.fingerprints() for provider in self._providers if hasattr(provider, "fingerprints"))
         )
 
+    def logins(self) -> list[Identity]:
+        """Every identity the settings let in, by every provider that knows its own."""
+        return [login for provider in self._providers if hasattr(provider, "logins") for login in provider.logins()]
+
+    def comments(self) -> set[str]:
+        """What the settings' keys are shown as, apart from their users."""
+        return set().union(*(provider.comments() for provider in self._providers if hasattr(provider, "comments")))
+
     def look_up(self, users: Users) -> None:
         """Has every provider that can log in database users find them in `users`."""
         for provider in self._providers:

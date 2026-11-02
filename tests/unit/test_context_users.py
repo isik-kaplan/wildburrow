@@ -7,13 +7,15 @@ from typing import Any
 import pytest
 from argon2 import PasswordHasher
 
-from tests.unit.test_auth import Fixed
+from tests.unit.test_auth import Fixed, openssh_line, public_key
 from tests.unit.test_sessions import ADMIN, PEER, POLICY_ADMINS
 from tests.unit.test_store import Clock
-from tests.unit.test_users import new_key
+from tests.unit.test_users import HASH, new_key
 from wildburrow.auth.base import Authenticator
+from wildburrow.auth.keys import KeyAuth, KeySettings
+from wildburrow.auth.password import PasswordAuth, PasswordSettings
 from wildburrow.core.context import NOT_A_USER, ServerContext
-from wildburrow.core.sessions import Policy, Session
+from wildburrow.core.sessions import Admins, Policy, Session
 from wildburrow.core.types import Identity, TokenCredential
 from wildburrow.core.users import Users
 from wildburrow.store.database import Database, Storage
@@ -160,7 +162,6 @@ async def test_each_change_says_who_made_it_from_where_and_by_which_command(
     assert commands == [1, 2, 3]
     invited = await ctx.invite(admin, {"name": "carol"}, 1)
     await ctx.join({"code": invited["code"], "password": "pw", "public_key": new_key().line}, "websocket", PEER)
-    assert await ctx.user_listing(admin) == {"users": await ctx.users.listing(), "memory": False}
     await ctx.set_admin(admin, {"name": "carol", "admin": True}, 2)
     await ctx.remove_user(admin, {"name": "carol"}, 3)
     database = ctx.users._store._database
@@ -176,3 +177,36 @@ async def test_each_change_says_who_made_it_from_where_and_by_which_command(
     assert await database.read("SELECT label FROM user_keys") == [("key",)]
     said = [record.getMessage() for record in caplog.records if record.name == "wildburrow.core.context"]
     assert said == ["root invited carol", f"carol joined from {PEER.host}", "root removed carol"]
+
+
+async def test_users_are_listed_with_every_login_and_which_the_settings_make_admins(ctx: ServerContext) -> None:
+    laptop, phone, daves = public_key("isik@laptop"), public_key("isik@phone"), public_key("dave's")
+    keys = KeyAuth(KeySettings(
+        "\n".join(map(openssh_line, (laptop, phone, daves))),
+        f"isik:{laptop.get_fingerprint()}\nisik:{phone.get_fingerprint()}\ndave:{daves.get_fingerprint()}",
+    ))  # fmt: skip
+    ctx.authenticator = Authenticator([keys, PasswordAuth(PasswordSettings(f"erin:{HASH}"))])
+    await ctx.users.open(["root", *ctx.authenticator.users()], ctx.authenticator.fingerprints())
+    rules = frozenset({
+        ("key", "root"), ("key", laptop.get_fingerprint()), ("key", "dave"), ("token", "tess"), ("token", "signed:tom"),
+    })  # fmt: skip
+    ctx.policy = Policy(Admins(exact=rules, database=ctx.users.admins))
+    admin, _ = session(ctx, ADMIN)
+    await joined(ctx, admin, password="pw")
+    await ctx.set_admin(admin, {"name": "carol", "admin": True})
+    for holder in ("tess", "tom", "una"):
+        assert await ctx.users.admit(Identity(holder, "token", f"signed:{holder}"))
+    answer = await ctx.user_listing(admin)
+    assert answer["memory"] is False
+    listed = {user["name"]: user for user in answer["users"]}
+    assert {name: (user["logins"], user["admin_logins"], user["admin"]) for name, user in listed.items()} == {
+        "carol": (["password"], [], True),
+        "dave": (["key (dave's)"], ["key (dave's)"], False),
+        "erin": (["password"], [], False),
+        "isik": (["key (laptop)", "key (phone)"], ["key (laptop)"], False),
+        "root": ([], [], False),
+        # A signed token's holder by their name, or the identity all their tokens share.
+        "tess": (["token"], ["token"], False),
+        "tom": (["token"], ["token"], False),
+        "una": (["token"], [], False),
+    }

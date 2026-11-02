@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import asyncssh
 import pytest
 
 from tests.conftest import Credentials, StartServer
@@ -19,6 +20,7 @@ def env(credentials: Credentials, path: Path | None) -> dict[str, str]:
     return {
         "WILDBURROW_TRANSPORTS": "websocket",
         "WILDBURROW_AUTH": "key,password",
+        "WILDBURROW_AUTH_KEY_USERS": f"laptop:{asyncssh.import_public_key(credentials.public_key).get_fingerprint()}",
         "WILDBURROW_ADMINS": "key:laptop",
         "WILDBURROW_DATABASE": "" if path is None else str(path),
     }

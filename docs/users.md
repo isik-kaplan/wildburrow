@@ -7,12 +7,22 @@ key is its own, as is a password or a token, so `isik`'s laptop and phone show u
 
 | From | Who | Changed by |
 |---|---|---|
-| The settings | Each `WILDBURROW_AUTH_PASSWORD_USERS` line, each key's user in the authorized keys, each `WILDBURROW_AUTH_TOKEN_HASHES` name | The server's settings, and a restart |
+| The settings | Each `WILDBURROW_AUTH_PASSWORD_USERS` line, each key's user in `WILDBURROW_AUTH_KEY_USERS` (or the key itself, by fingerprint, when none is named), each `WILDBURROW_AUTH_TOKEN_HASHES` name | The server's settings, and a restart |
 | A signed token | Its holder, the first time they log in | Whoever holds a signer key |
 | An invite | Someone an admin invited, once they join | Admins, while the server runs |
 
-- **A key's user** is its comment up to `@`: `isik@laptop` and `isik@phone` are both `isik`, on the device after the
-  `@`. A comment without `@` is the user, and a key without a comment is its own user, named by its fingerprint.
+- **A key's user** is named in `WILDBURROW_AUTH_KEY_USERS`, one `name:SHA256:fingerprint` line per key, so isik's
+  laptop and phone keys are both `isik`:
+
+  ```
+  WILDBURROW_AUTH_KEY_USERS='isik:SHA256:/j2Ml0nAmRbhaV5ArT+eSUOHjZcnJKjcSqIPnBf3c0k
+  isik:SHA256:Xq9...
+  carol:SHA256:Pf3...'
+  ```
+
+  `ssh-keygen -lf KEY.pub` prints a key's fingerprint. A key no line names is its own user, named by its fingerprint.
+  The key's comment is only what it's shown as, in `tunnels`, `users` and the record: nothing about who it is or
+  whether it's an admin is read from it. The keys stay a plain authorized_keys file, so sshd can share it.
 - **The settings' users** are copied into the database at every start, so everything about them can point at them.
   Nothing done while the server runs changes them. A name taken out of the settings stays, so its history does, but
   can't log in until it's back.
@@ -50,11 +60,21 @@ wildburrow join tunnel.example.com wbi_Jq3… --alias c          # log in as car
 ## Managing them
 
 ```sh
-wildburrow users                   # every user: where from, admin or not, how they log in
+wildburrow users                   # every user: where from, whether an admin and by what, how they log in
 wildburrow users promote carol     # make an invited user an admin
 wildburrow users demote carol
 wildburrow users remove carol      # ends their sessions; their password, keys and invite go, their history stays
 ```
+
+```
+USER   ALIAS  FROM      ADMIN              LOGS IN WITH
+carol  c      invited   yes                password, key (phone)
+dave   -      settings  by the settings    key (dave's)
+isik   -      settings  only key (laptop)  key (laptop), key (phone)
+```
+
+`yes` is an admin made with `promote`; `by the settings` is one by `WILDBURROW_ADMINS`, which only the server's
+settings change; `only ...` names the logins it makes admins when it doesn't make them all.
 
 All four are for admins. Only invited users can be promoted, demoted or removed: who the settings make an admin
 (`WILDBURROW_ADMINS`) stays one whatever the database says, and `demote` says so when someone still is. A removed user

@@ -81,6 +81,7 @@ Defaults for every [locked tunnel](locks.md), which a client can change for its 
 | Variable | Default | |
 |---|---|---|
 | `WILDBURROW_AUTH_KEY_AUTHORIZED_KEYS` | `~/.ssh/authorized_keys` | OpenSSH public keys, one per line |
+| `WILDBURROW_AUTH_KEY_USERS` | | `name:SHA256:fingerprint` lines naming each key's user; a key no line names is its own user, by fingerprint. See [users.md](users.md) |
 | `WILDBURROW_AUTH_PASSWORD_USERS` | | `name:argon2hash` lines, one per user, from `wildburrow passwords hash NAME`; invited users come on top |
 | `WILDBURROW_AUTH_PASSWORD_MAX_FAILURES` | `5` | Failed passwords per address before blocking |
 | `WILDBURROW_AUTH_PASSWORD_BLOCK_SECONDS` | `900` | How long failures count against an address |
