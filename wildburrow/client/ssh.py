@@ -1,15 +1,14 @@
 import asyncio
-import signal
 import sys
 from collections.abc import Callable, Sequence
 
 from wildburrow import protocol
 from wildburrow.client.config import ClientConfig
 from wildburrow.client.retry import Backoff
+from wildburrow.stopping import Stopping, closing
 
 REMOTE_PORT = 80
 CONNECTION_FAILED = 255
-TERMINATED = 128 + signal.SIGTERM
 KEEPALIVE = ("-o", "ServerAliveInterval=30")
 # ssh asks nothing, failing instead.
 BATCH = ("-o", "BatchMode=yes")
@@ -61,20 +60,17 @@ async def tunnel(
 
 
 async def _main(config: ClientConfig, command: Sequence[str]) -> int:
-    task = asyncio.current_task()
-    assert task is not None  # noqa: S101
-    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     out = lambda line: print(line, file=sys.stderr)  # noqa: E731
+    # ssh asks for a passphrase itself, and gets the terminal's ctrl+c too.
+    stopping = Stopping(lambda sig, again: out(closing(sig, again)))
+    stopping.install()
     try:
         return await tunnel(
             command, out, backoff=Backoff(config.retry_delay, config.retry_max), reconnect=config.reconnect
         )
     except asyncio.CancelledError:
-        return TERMINATED
+        return stopping.code()
 
 
 def run(config: ClientConfig, port: int, names: Sequence[str], local_host: str, batch: bool = False) -> int:
-    try:
-        return asyncio.run(_main(config, ssh_command(config, port, names, local_host, batch)))
-    except KeyboardInterrupt:
-        return 130
+    return asyncio.run(_main(config, ssh_command(config, port, names, local_host, batch)))

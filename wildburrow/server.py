@@ -25,6 +25,7 @@ from wildburrow.dns.recorded import RecordedDNS
 from wildburrow.edge import proxy
 from wildburrow.edge.http import Edge, Mode
 from wildburrow.locks import FIELDS, LOCK_PREFIX, LockSettings, ServerLockSettings, problems
+from wildburrow.stopping import Stopping
 from wildburrow.store.database import DATABASE_PREFIX, Database, DatabaseError, DatabaseSettings, storage
 from wildburrow.store.record import Handler, Recorder
 from wildburrow.store.users import UserStore
@@ -242,11 +243,22 @@ async def _cancel(task: asyncio.Task[None]) -> None:
         await task
 
 
+def _stopping(sig: signal.Signals, again: bool) -> None:
+    if again:
+        log.warning("%s again: stopping now, without waiting for connections to close", sig.name)
+    else:
+        log.info("%s: stopping; send it again to stop without waiting for connections to close", sig.name)
+
+
 async def serve(env: Mapping[str, str]) -> None:
+    """Runs a server until a signal stops it, closing everything it opened, even when stopped while starting."""
     server = Server(config.load(config.ServerSettings, env, config.PREFIX), env)
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-    async with server:
-        await stop.wait()
+    stopping = Stopping(_stopping)
+    stopping.install()
+    try:
+        async with server:
+            await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        if stopping.signal is None:
+            raise
+    log.info("stopped")

@@ -23,13 +23,14 @@
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    margin: 0; min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; padding: 16px;
     background: var(--canvas); color: var(--ink);
     font: 12px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   main {
-    width: 100%; max-width: 360px; display: grid; gap: 16px; padding: 16px;
+    /* As wide as the heading needs, so the host stays on one line where the screen allows. */
+    width: max-content; min-width: min(360px, 100%); max-width: 100%; display: grid; gap: 16px; padding: 16px;
     background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow);
   }
   header { display: grid; gap: 4px; }
@@ -37,6 +38,9 @@
   p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
   h1 .to { color: var(--muted); font-weight: 400; }
   .host { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  /* The host moves to a line of its own before it breaks, and then only after a dot. */
+  .host { display: inline-block; text-wrap: balance; }
+  .label { white-space: nowrap; }
   form { display: grid; gap: 12px; }
   .field { display: grid; gap: 6px; }
   label { font-weight: 500; line-height: 1; }
@@ -68,7 +72,7 @@
 <body>
 <main>
   <header>
-    <h1>Log in <span class="to">to</span> <span class="host">$title</span></h1>
+    <h1>Log in <span class="to">to</span> <span class="host">$host</span></h1>
   </header>
   <p class="error" role="alert">$error</p>
   <form method="post" action="$action">

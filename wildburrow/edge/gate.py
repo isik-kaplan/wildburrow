@@ -69,6 +69,14 @@ def _page(lock: Lock, which: str, status: HTTPStatus, cookies: list[str], **valu
     return response(status, headers, page, HTML)
 
 
+def _host(title: str) -> str:
+    """`title` marked up to wrap only after its dots, never at a hyphen inside a label."""
+    labels = escape(title).split(".")
+    return "<wbr>".join(
+        f'<span class="label">{label}</span>' for label in [f"{part}." for part in labels[:-1]] + labels[-1:]
+    )
+
+
 def _message(lock: Lock, status: HTTPStatus, text: tuple[str, str], cookies: list[str] | None = None) -> bytes:
     heading, message = map(escape, text)
     return _page(lock, "message_page", status, cookies or [], heading=heading, message=message)
@@ -166,7 +174,15 @@ def _login(lock: Lock, status: HTTPStatus, fields: dict[str, str], title: str, e
         f'<input type="hidden" name="{escape(key)}" value="{escape(value)}">' for key, value in carried.items()
     )
     return _page(
-        lock, "page", status, [], title=escape(title), action=escape(lock.prefix), hidden=hidden, error=escape(error)
+        lock,
+        "page",
+        status,
+        [],
+        title=escape(title),
+        host=_host(title),
+        action=escape(lock.prefix),
+        hidden=hidden,
+        error=escape(error),
     )
 
 
@@ -215,7 +231,9 @@ def _link(ctx: ServerContext, lock: Lock, request: Request, key: str) -> bytes:
     if request.method in SAFE:
         ctx.record.link_opened(lock, entry, request.peer, request, used=False)
         title = entry.host or lock.home
-        return _page(lock, "link_page", HTTPStatus.OK, [], title=escape(title), action=escape(request.path()))
+        return _page(
+            lock, "link_page", HTTPStatus.OK, [], title=escape(title), host=_host(title), action=escape(request.path())
+        )
     return response(HTTPStatus.METHOD_NOT_ALLOWED)
 
 

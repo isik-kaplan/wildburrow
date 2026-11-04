@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import getpass
 import platform
+import signal
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Sequence
@@ -11,14 +12,17 @@ from typing import Any
 
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
+from websockets.frames import CloseCode
 
 from wildburrow import protocol
 from wildburrow.client.config import ClientConfig
 from wildburrow.client.locking import LockRequest
 from wildburrow.client.retry import Backoff
+from wildburrow.stopping import Stopping, closing
 from wildburrow.streams import relay
 
 DEFAULT_IDENTITIES = ("id_ed25519", "id_ecdsa", "id_rsa")
+INTERRUPTED = 128 + signal.SIGINT
 FATAL_CLOSE_CODES = {protocol.CLOSE_PROTOCOL_ERROR, protocol.CLOSE_AUTH_FAILED}
 
 
@@ -274,6 +278,18 @@ async def end_logins(
     return await converse(config, talk, ask, connector, protocol.LOCK)
 
 
+def _closed(exc: ConnectionClosed) -> str:
+    """Why the server closed a connection, when it said."""
+    if exc.rcvd is None:
+        return "connection closed"
+    if exc.rcvd.reason:
+        return exc.rcvd.reason
+    # Every connection a stopping server has gets this.
+    if exc.rcvd.code == CloseCode.GOING_AWAY:
+        return "the server is stopping"
+    return "connection closed"
+
+
 class Client:
     def __init__(
         self,
@@ -287,7 +303,9 @@ class Client:
         backoff: Backoff | None = None,
         lock: LockRequest | None = None,
         index: bool | None = None,
+        stopping: Stopping | None = None,
     ) -> None:
+        self._stopping = stopping
         self._config = config
         self._lock = lock
         self._index = index
@@ -305,6 +323,9 @@ class Client:
     async def run(self) -> int:
         try:
             greeting = hello(self._config, self._ask)
+            # Only once the password is asked: until then ctrl+c has to interrupt the prompt.
+            if self._stopping is not None:
+                self._stopping.install()
             while True:
                 try:
                     async with self._connect(f"{self._base}{protocol.CONNECT_PATH}") as control:
@@ -317,7 +338,7 @@ class Client:
                         return 1
                     if exc.rcvd is not None and exc.rcvd.code in FATAL_CLOSE_CODES:
                         raise ClientError(exc.rcvd.reason or f"closed with code {exc.rcvd.code}") from None
-                    reason = exc.rcvd.reason if exc.rcvd is not None and exc.rcvd.reason else "connection closed"
+                    reason = _closed(exc)
                 except (OSError, InvalidHandshake, TimeoutError) as exc:
                     reason = str(exc) or type(exc).__name__
                 state = "connection lost" if self._connected else f"could not connect to {self._base}"
@@ -332,6 +353,10 @@ class Client:
         except InvalidURI as exc:
             self._out(f"error: {exc}")
             return 1
+        except asyncio.CancelledError:
+            if self._stopping is None or self._stopping.signal is None:
+                raise
+            return self._stopping.code()
         finally:
             for task in self._streams:
                 task.cancel()
@@ -399,8 +424,11 @@ def run(
     index: bool | None = None,
 ) -> int:
     out = lambda line: print(line, file=sys.stderr)  # noqa: E731
-    client = Client(config, port, names, local_host, ask, out=out, lock=lock, index=index)
+    stopping = Stopping(lambda sig, again: out(closing(sig, again)))
+    client = Client(config, port, names, local_host, ask, out=out, lock=lock, index=index, stopping=stopping)
     try:
         return asyncio.run(client.run())
     except KeyboardInterrupt:
-        return 130
+        # ctrl+c at the password prompt, before the signals are handled.
+        out("interrupted")
+        return INTERRUPTED

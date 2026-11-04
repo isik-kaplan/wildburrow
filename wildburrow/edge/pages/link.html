@@ -36,6 +36,11 @@
   h1 { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; }
   p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
   .host { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  /* The host moves to a line of its own before it breaks, and then only after a dot. */
+  .host { display: inline-block; text-wrap: balance; }
+  .label { white-space: nowrap; }
+  /* The sentence's full stop, kept with the host rather than left on a line alone. */
+  .end { color: var(--muted); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
   form { display: grid; gap: 12px; }
   .field { display: grid; gap: 6px; }
   label { font-weight: 500; line-height: 1; }
@@ -68,7 +73,7 @@
 <main>
   <header>
     <h1>You've been invited</h1>
-    <p>to <span class="host">$title</span>. This link works once, so it opens only when you continue.</p>
+    <p>to <span class="host">$host<span class="end">.</span></span> This link works once, so it opens only when you continue.</p>
   </header>
   <form method="post" action="$action">
     <button type="submit" autofocus>Continue</button>

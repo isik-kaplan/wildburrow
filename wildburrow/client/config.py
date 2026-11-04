@@ -1,6 +1,7 @@
 import getpass
 import json
 import os
+import tempfile
 import tomllib
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -53,10 +54,16 @@ def read_toml(path: Path) -> dict[str, Any]:
 def write_toml(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lines = "".join(f"{key} = {_toml_value(value)}\n" for key, value in data.items())
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as file:
-        file.write(lines.encode())
-    path.chmod(0o600)
+    # Written beside it and swapped in, so a command stopped halfway leaves the old file whole, not an empty one.
+    target = path.resolve()
+    fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(lines.encode())
+        os.replace(temporary, target)
+    except BaseException:
+        os.unlink(temporary)
+        raise
 
 
 def read_config(path: Path) -> ClientConfig | None:

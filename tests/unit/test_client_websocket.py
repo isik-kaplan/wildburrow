@@ -1,5 +1,7 @@
 import asyncio
 import getpass
+import os
+import signal
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from wildburrow.client.config import ClientConfig
 from wildburrow.client.locking import LockRequest
 from wildburrow.client.retry import Backoff
 from wildburrow.client.websocket import Client, ClientError, hello, identity_file, sign, websocket_base
+from wildburrow.stopping import Stopping, closing
 
 NO_WAIT = Backoff(0, 0)
 
@@ -242,6 +245,7 @@ async def test_errors_without_a_message_name_the_error() -> None:
     ("close", "line"),
     [
         (Close(1001, "going away"), "could not connect to ws://s: going away; retrying in 0s"),
+        (Close(1001, ""), "could not connect to ws://s: the server is stopping; retrying in 0s"),
         (Close(1006, ""), "could not connect to ws://s: connection closed; retrying in 0s"),
         (None, "could not connect to ws://s: connection closed; retrying in 0s"),
     ],
@@ -326,6 +330,93 @@ def test_run_prints_to_stderr(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Ca
 
     monkeypatch.setattr(Client, "run", interrupted)
     assert websocket.run(config, 9, ["a"], "127.0.0.1") == 130
+    assert capsys.readouterr().err == "interrupted\n"
+
+
+class Held(FakeControl):
+    """A session that stays up until the client leaves it, noting that it left."""
+
+    def __init__(self) -> None:
+        super().__init__([welcome()], asyncio.Event())
+        self.left = False
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.left = True
+
+
+def stopped_client(lines: list[str], control: FakeControl, asked: list[str]) -> Client:
+    config = ClientConfig("s", user="me", auth="password", url="http://s")
+    stopping = Stopping(lambda sig, again: lines.append(closing(sig, again)))
+
+    def ask(prompt: str) -> str:
+        # The signals aren't handled yet, so ctrl+c can stop the prompt.
+        asked.append(str(signal.getsignal(signal.SIGTERM)))
+        return "pw"
+
+    return Client(config, 9, ["app"], "127.0.0.1", ask, lines.append, fake_connector(control), stopping=stopping)
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_a_signal_closes_the_session_and_says_why(sig: signal.Signals) -> None:
+    lines: list[str] = []
+    asked: list[str] = []
+    control = Held()
+
+    before = str(signal.getsignal(signal.SIGTERM))
+
+    async def go() -> int:
+        task = asyncio.create_task(stopped_client(lines, control, asked).run())
+        while "connected as ci" not in lines:
+            await asyncio.sleep(0)
+        os.kill(os.getpid(), sig)
+        return await task
+
+    assert asyncio.run(go()) == 128 + sig
+    assert lines == ["connected as ci", closing(sig, again=False)]
+    assert control.left
+    assert asked == [before]
+
+
+def test_run_says_why_a_signal_closed_the_tunnel(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Signalled(Held):
+        async def __anext__(self) -> str:
+            if not self.incoming:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return await super().__anext__()
+
+        async def __aexit__(self, *exc: object) -> None:
+            # A close that hangs, cut short by a second signal.
+            os.kill(os.getpid(), signal.SIGINT)
+            try:
+                await asyncio.sleep(10)
+            finally:
+                await super().__aexit__(*exc)
+
+    control = Signalled()
+    real = websocket.Client
+    monkeypatch.setattr(
+        websocket, "Client", lambda *args, **kwargs: real(*args, **kwargs, connector=fake_connector(control))
+    )
+    config = ClientConfig("s", auth="token", token="t", url="http://s")
+    assert websocket.run(config, 9, ["app"], "127.0.0.1") == 143
+    assert capsys.readouterr().err == "connected as ci\nterminated: closing the tunnel\nquitting now\n"
+    assert control.left
+
+
+def test_a_cancel_no_signal_asked_for_is_passed_on() -> None:
+    lines: list[str] = []
+
+    async def go() -> None:
+        task = asyncio.create_task(stopped_client(lines, Held(), []).run())
+        while "connected as ci" not in lines:
+            await asyncio.sleep(0)
+        task.cancel()
+        await task
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(go())
 
 
 def test_run_hands_the_tunnel_to_the_client(monkeypatch: pytest.MonkeyPatch) -> None:

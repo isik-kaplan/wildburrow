@@ -101,8 +101,8 @@ async def test_the_built_in_pages_load_nothing(ctx: ServerContext) -> None:
     assert page.header("Referrer-Policy") == "no-referrer"
     assert page.header("X-Content-Type-Options") == "nosniff"
     assert page.header("Content-Type") == "text/html; charset=utf-8"
-    assert set(re.findall(r"\$(\w+)", BUILT_IN["page"])) == {"title", "action", "error", "hidden"}
-    assert set(re.findall(r"\$(\w+)", BUILT_IN["link_page"])) == {"title", "action"}
+    assert set(re.findall(r"\$(\w+)", BUILT_IN["page"])) == {"title", "host", "action", "error", "hidden"}
+    assert set(re.findall(r"\$(\w+)", BUILT_IN["link_page"])) == {"title", "host", "action"}
     assert set(re.findall(r"\$(\w+)", BUILT_IN["message_page"])) == {"heading", "message"}
 
 
@@ -112,6 +112,14 @@ async def test_the_login_page_escapes_what_it_carries(ctx: ServerContext) -> Non
     assert (
         page.body
         == f'[{HOME}|/_wildburrow/login||<input type="hidden" name="to" value="/&quot;&gt;&lt;x&gt;">]'.encode()
+    )
+
+
+async def test_the_login_page_breaks_the_host_only_after_its_dots(ctx: ServerContext) -> None:
+    lock = locked(ctx, page="$host")
+    page = await ask(ctx, lock, "GET", HOME, "/")
+    assert page.body == (
+        b'<span class="label">foo.</span><wbr><span class="label">example.</span><wbr><span class="label">com</span>'
     )
 
 
@@ -405,9 +413,12 @@ async def test_a_link_asks_for_a_click_first(ctx: ServerContext) -> None:
 
 
 async def test_a_link_to_another_host_says_so_and_lands_there(ctx: ServerContext) -> None:
-    lock = locked(ctx, link_page="$title")
+    lock = locked(ctx, link_page="$title $host")
     key = link_key(lock, OTHER, "/deep?x=1")
-    assert (await ask(ctx, lock, "GET", HOME, f"/_wildburrow/login/link/{key}")).body == OTHER.encode()
+    labels = OTHER.split(".")
+    host = "<wbr>".join(f'<span class="label">{label}.</span>' for label in labels[:-1])
+    host += f'<wbr><span class="label">{labels[-1]}</span>'
+    assert (await ask(ctx, lock, "GET", HOME, f"/_wildburrow/login/link/{key}")).body == f"{OTHER} {host}".encode()
     landed = await ask(ctx, lock, "POST", HOME, f"/_wildburrow/login/link/{key}")
     assert landed.header("Location") == f"http://{OTHER}/deep?x=1"
 

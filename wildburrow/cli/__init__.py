@@ -1,3 +1,4 @@
+import signal
 import sys
 from collections.abc import Sequence
 from importlib.metadata import version
@@ -55,6 +56,10 @@ for command in (client.connect, client.login, client.logout, client.names, clien
     cli.add_command(command)
 
 
+# What a shell gives a command ctrl+c stopped.
+INTERRUPTED = 128 + signal.SIGINT
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # Driven by hand rather than through cli.main, so a command's return value is the exit code.
     try:
@@ -68,7 +73,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ServiceError as exc:
         click.echo(str(exc), err=True)
         return 1
-    except click.Abort, KeyboardInterrupt, EOFError:
+    except KeyboardInterrupt:
+        click.echo("interrupted", err=True)
+        return INTERRUPTED
+    except click.Abort, EOFError:
         click.echo("aborted", err=True)
         return 1
     return result or 0

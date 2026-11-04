@@ -2,6 +2,7 @@ import builtins
 import dataclasses
 import functools
 import logging
+import os
 import re
 import runpy
 import stat
@@ -481,9 +482,16 @@ def test_serve_logs_with_timestamps(
 def test_config_is_private_from_the_start(monkeypatch: pytest.MonkeyPatch, config_home: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home / "missing" / "config"))
     modes: list[int] = []
-    monkeypatch.setattr(Path, "chmod", lambda self, mode: modes.append(stat.S_IMODE(self.stat().st_mode)))
+    swap = os.replace
+
+    def replace(source: str, target: Path) -> None:
+        modes.append(stat.S_IMODE(os.stat(source).st_mode))
+        swap(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
     assert cli.main(["login", "s", "--token", "secret"]) == 0
     assert modes == [0o600]
+    assert stat.S_IMODE(config_path().stat().st_mode) == 0o600
     assert stat.S_IMODE(config_path().parent.stat().st_mode) == 0o700
 
 
@@ -740,10 +748,10 @@ def test_login_defaults_to_the_first_key_it_finds(typed: Typist, tmp_path: Path)
     assert read_config(config_path()).identity == str(tmp_path / ".ssh" / "id_ed25519")
 
 
-def test_login_can_be_cancelled(typed: Typist, capsys: pytest.CaptureFixture[str]) -> None:
+def test_login_can_be_interrupted(typed: Typist, capsys: pytest.CaptureFixture[str]) -> None:
     typed("tunnel", CTRL_C)
-    assert cli.main(["login"]) == 1
-    assert capsys.readouterr().err == "aborted\n"
+    assert cli.main(["login"]) == 130
+    assert capsys.readouterr().err == "interrupted\n"
     assert read_config(config_path()) is None
 
 
@@ -862,16 +870,22 @@ def test_login_port_must_be_a_number(typed: Typist) -> None:
     assert read_config(config_path()).ssh_port == 22
 
 
-@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, EOFError])
-def test_interrupting_a_prompt_aborts(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], interrupt: type[BaseException]
+@pytest.mark.parametrize(
+    ("interrupt", "code", "said"), [(KeyboardInterrupt, 130, "interrupted\n"), (EOFError, 1, "aborted\n")]
+)
+def test_interrupting_a_prompt_stops(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    interrupt: type[BaseException],
+    code: int,
+    said: str,
 ) -> None:
     def getpass(prompt: str) -> str:
         raise interrupt
 
     monkeypatch.setattr(server_cli.getpass, "getpass", getpass)
-    assert cli.main(["passwords", "hash", "alice"]) == 1
-    assert capsys.readouterr().err == "aborted\n"
+    assert cli.main(["passwords", "hash", "alice"]) == code
+    assert capsys.readouterr().err == said
 
 
 def _bound(command: click.Command) -> list[click.Command]:

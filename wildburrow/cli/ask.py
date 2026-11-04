@@ -52,10 +52,7 @@ def _validator(check: Check | None) -> Callable[[str], bool | str]:
 
 
 def _answer(question: Any) -> Any:
-    try:
-        return question.unsafe_ask()
-    except KeyboardInterrupt:
-        raise click.Abort from None
+    return question.unsafe_ask()
 
 
 def text(message: str, default: str = "", check: Check | None = None) -> str:

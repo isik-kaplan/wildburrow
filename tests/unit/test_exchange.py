@@ -274,6 +274,26 @@ async def test_a_websocket_upgrade_hands_the_connection_over(ctx: ServerContext)
     assert reply == switched + b"<ping>"
 
 
+async def test_an_upgraded_visitor_can_finish_sending_first(ctx: ServerContext) -> None:
+    switched = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+    finished = asyncio.Event()
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b"<" + await reader.readexactly(4) + b">")
+        await writer.drain()
+        # Held open until the visitor has its answer, so the visitor's side ends first.
+        await finished.wait()
+
+    async with app(ctx, replying(switched, then=echo)), running(ctx) as edge:
+        reader, writer = await asyncio.open_connection("127.0.0.1", edge.port)
+        writer.write(request("/ws", "Upgrade: websocket", "Connection: Upgrade") + b"ping")
+        writer.write_eof()
+        async with asyncio.timeout(2):
+            assert await reader.readexactly(len(switched) + 6) == switched + b"<ping>"
+        finished.set()
+        writer.close()
+
+
 async def test_an_upgrade_turned_down_keeps_the_connection_as_it_was(ctx: ServerContext) -> None:
     async with app(ctx, replying(OK, CLOSING)):
         reply = await visit(ctx, request("/ws", "Upgrade: websocket", "Connection: Upgrade") + request())

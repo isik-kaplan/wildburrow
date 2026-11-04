@@ -1,5 +1,6 @@
 import io
 import os
+import signal
 from collections.abc import Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -65,6 +66,23 @@ def typed(monkeypatch: pytest.MonkeyPatch) -> Iterator[Typist]:
         monkeypatch.setattr(ask, "IO", {})
         monkeypatch.setattr(ask, "interactive", lambda: True)
         yield Typist(stack)
+
+
+class StraySignal(Exception):
+    """A signal a test sent that the code under test didn't handle."""
+
+
+@pytest.fixture(autouse=True)
+def stray_signals_fail() -> Iterator[None]:
+    """A signal nothing handles fails its test rather than ending the run, as SIGTERM and SIGHUP would."""
+
+    def stray(sig: int, frame: object) -> None:
+        raise StraySignal(signal.Signals(sig).name)
+
+    before = {sig: signal.signal(sig, stray) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    yield
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
 
 
 @pytest.fixture(autouse=True)

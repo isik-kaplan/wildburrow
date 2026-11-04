@@ -42,7 +42,7 @@ DARWIN_ENV = {"no_proxy": "*"}
 SHARDS = {
     "commands": ("wildburrow.cli.",),
     "service": ("wildburrow.service.", "wildburrow.envfile."),
-    "client": ("wildburrow.client.",),
+    "client": ("wildburrow.client.", "wildburrow.stopping."),
     "transports": ("wildburrow.transports.",),
     "edge": (
         "wildburrow.edge.", "wildburrow.server.", "wildburrow.core.", "wildburrow.protocol.", "wildburrow.streams.",

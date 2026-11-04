@@ -134,12 +134,13 @@ A page is HTML with `$name` placeholders, at most 64 KB. The built-in pages in
 
 | Page | Placeholders | What it does |
 |---|---|---|
-| login | `$title`, `$action`, `$hidden`, `$error` | POSTs `username`, `password` and `$hidden` to `$action` |
-| link | `$title`, `$action` | POSTs to `$action` |
+| login | `$title`, `$host`, `$action`, `$hidden`, `$error` | POSTs `username`, `password` and `$hidden` to `$action` |
+| link | `$title`, `$host`, `$action` | POSTs to `$action` |
 | message | `$heading`, `$message` | Says why a visitor can't go on |
 
-`$title` is the host the visitor is going to. Every value comes HTML-escaped. The built-in pages load nothing from
-anywhere; one of your own may, but no page can be framed.
+`$title` is the host the visitor is going to, and `$host` is the same host marked up to wrap only after its dots.
+Every value comes HTML-escaped. The built-in pages load nothing from anywhere; one of your own may, but no page can
+be framed.
 
 ## How it holds up
 

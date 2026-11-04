@@ -1,4 +1,7 @@
+import os
 import re
+import stat
+from pathlib import Path
 
 import pytest
 
@@ -133,3 +136,41 @@ def test_a_login_keeps_what_config_saved() -> None:
     assert cli.main(["config", "set", "local_host", "127.0.0.2"]) == 0
     write_config(config_path(), ClientConfig("s.example.com"))
     assert read_toml(config_path())["local_host"] == "127.0.0.2"
+
+
+def test_a_write_stopped_halfway_leaves_the_old_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "config.toml"
+    write_toml(path, {"server": "old"})
+
+    def stopped(source: str, target: Path) -> None:
+        # Beside the file it replaces, since a rename can't cross file systems.
+        assert Path(source).parent == tmp_path
+        assert Path(source).name.startswith(".config.toml.")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(os, "replace", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        write_toml(path, {"server": "new"})
+    assert read_toml(path) == {"server": "old"}
+    assert [entry.name for entry in tmp_path.iterdir()] == ["config.toml"]
+
+
+def test_a_linked_config_is_written_through_the_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "dotfiles").mkdir()
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.write_text('server = "old"\n')
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    swapped: list[Path] = []
+    swap = os.replace
+
+    def replace(source: str, target: Path) -> None:
+        swapped.append(Path(source).parent)
+        swap(source, target)
+
+    monkeypatch.setattr(os, "replace", replace)
+    write_toml(link, {"server": "new"})
+    assert swapped == [real.parent]
+    assert link.is_symlink()
+    assert read_toml(real) == {"server": "new"}
+    assert stat.S_IMODE(real.stat().st_mode) == 0o600

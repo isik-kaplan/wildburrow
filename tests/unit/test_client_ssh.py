@@ -100,22 +100,42 @@ def test_run_reports_exit_codes(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
     assert capsys.readouterr().err == "ready: http://app.example\n" * 2
 
 
-def test_run_stops_on_sigterm(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def terminated(command: list[str], out, **kwargs) -> int:
-        os.kill(os.getpid(), signal.SIGTERM)
+@pytest.mark.parametrize(
+    ("sig", "said"),
+    [
+        (signal.SIGINT, "interrupted: closing the tunnel (ctrl+c again to quit now)"),
+        (signal.SIGTERM, "terminated: closing the tunnel"),
+        (signal.SIGHUP, "hung up: closing the tunnel"),
+    ],
+)
+def test_run_stops_on_a_signal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], sig: signal.Signals, said: str
+) -> None:
+    async def stopped(command: list[str], out, **kwargs) -> int:
+        os.kill(os.getpid(), sig)
         await asyncio.sleep(10)
         raise AssertionError("not cancelled")
 
-    monkeypatch.setattr(ssh, "tunnel", terminated)
-    assert ssh.run(ClientConfig("s"), 3000, ["app"], "localhost") == ssh.TERMINATED
+    monkeypatch.setattr(ssh, "tunnel", stopped)
+    assert ssh.run(ClientConfig("s"), 3000, ["app"], "localhost") == 128 + sig
+    assert capsys.readouterr().err == f"{said}\n"
 
 
-def test_run_stops_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def interrupted(command: list[str], out, **kwargs) -> int:
-        raise KeyboardInterrupt
+def test_a_second_signal_cuts_the_closing_short(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def stopped(command: list[str], out, **kwargs) -> int:
+        os.kill(os.getpid(), signal.SIGINT)
+        try:
+            await asyncio.sleep(10)
+        finally:
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.sleep(10)
+        raise AssertionError("not cancelled")
 
-    monkeypatch.setattr(ssh, "tunnel", interrupted)
+    monkeypatch.setattr(ssh, "tunnel", stopped)
     assert ssh.run(ClientConfig("s"), 3000, ["app"], "localhost") == 130
+    assert capsys.readouterr().err.splitlines()[1:] == ["quitting now"]
 
 
 async def test_ssh_output_is_echoed_as_text_without_line_endings() -> None:

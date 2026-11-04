@@ -122,7 +122,7 @@ def test_confirm_defaults_to_yes(typed: Typist) -> None:
     assert ask.confirm("sure?") is True
 
 
-def test_ctrl_c_aborts(typed: Typist) -> None:
+def test_ctrl_c_interrupts(typed: Typist) -> None:
     typed(CTRL_C)
-    with pytest.raises(click.Abort):
+    with pytest.raises(KeyboardInterrupt):
         ask.confirm("sure?")

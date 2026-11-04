@@ -115,14 +115,79 @@ def test_domain_is_lowercased(tmp_path: Path) -> None:
     assert Server(config.load(config.ServerSettings, values, config.PREFIX), values).ctx.domain == "tunnel.example.com"
 
 
-async def test_serve_until_terminated(tmp_path: Path) -> None:
+def stopping_lines(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+    return [(record.levelno, record.getMessage()) for record in caplog.records if record.name == "wildburrow.server"]
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+async def test_serve_until_a_signal(tmp_path: Path, caplog: pytest.LogCaptureFixture, sig: signal.Signals) -> None:
+    caplog.set_level(logging.INFO, "wildburrow.server")
     task = asyncio.create_task(serve(env(tmp_path)))
     while not (tmp_path / "data" / "ssh_host_ed25519_key").exists():
         assert not task.done(), task.exception()
         await asyncio.sleep(0.01)
-    os.kill(os.getpid(), signal.SIGTERM)
+    os.kill(os.getpid(), sig)
     await asyncio.wait_for(task, 5)
     assert (tmp_path / "data").stat().st_mode & 0o777 == 0o700
+    assert stopping_lines(caplog)[-2:] == [
+        (logging.INFO, f"{sig.name}: stopping; send it again to stop without waiting for connections to close"),
+        (logging.INFO, "stopped"),
+    ]
+
+
+async def test_a_second_signal_stops_without_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, "wildburrow.server")
+    closed: list[str] = []
+
+    async def slow_exit(self: Server, *exc: object) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        try:
+            await asyncio.sleep(10)
+        finally:
+            closed.append("cut short")
+
+    async def started(self: Server) -> Server:
+        return self
+
+    monkeypatch.setattr(Server, "__aenter__", started)
+    monkeypatch.setattr(Server, "__aexit__", slow_exit)
+    task = asyncio.create_task(serve(env(tmp_path)))
+    await asyncio.sleep(0.01)
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.wait_for(task, 5)
+    assert closed == ["cut short"]
+    assert stopping_lines(caplog)[1:] == [
+        (logging.WARNING, "SIGTERM again: stopping now, without waiting for connections to close"),
+        (logging.INFO, "stopped"),
+    ]
+
+
+async def test_a_signal_stops_a_server_still_starting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def starting(self: Server) -> Server:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(10)
+        raise AssertionError("not cancelled")
+
+    monkeypatch.setattr(Server, "__aenter__", starting)
+    await asyncio.wait_for(serve(env(tmp_path)), 5)
+
+
+async def test_a_cancel_no_signal_asked_for_is_passed_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def started(self: Server) -> Server:
+        return self
+
+    async def done(self: Server, *exc: object) -> None:
+        pass
+
+    monkeypatch.setattr(Server, "__aenter__", started)
+    monkeypatch.setattr(Server, "__aexit__", done)
+    task = asyncio.create_task(serve(env(tmp_path)))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 async def test_users_without_a_home_get_the_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,11 +17,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `key:SHA256:...` one key. A server whose `key:` rule names only a key's comment won't start, saying what to use
   instead.
 
+### Changed
+
+- **The server and clients stop cleanly on ctrl+c, SIGTERM or SIGHUP**, saying which stopped them. The server logs
+  `SIGTERM: stopping` and then `stopped`, closing every connection, even when it is stopped while still starting. A
+  client closes its tunnel and exits with 128 and the signal's number (130 for ctrl+c). A second signal stops either
+  without waiting for connections to close.
+- **ctrl+c in any command says `interrupted` and exits 130**, the shell's convention, instead of `aborted` and 1.
+  Declining a question and ctrl+d still say `aborted`.
+- **A WebSocket client says `the server is stopping`** when the server it is connected to shuts down.
+
 ### Fixed
 
+- **Saving the client config can no longer empty it.** It is written beside the old file and swapped in, so a
+  command stopped mid-write keeps the old login. A config that is a symlink is written through it.
 - **`wildburrow users` shows who the settings make admins**, not only the users promoted in the database: `by the
   settings`, or `only` the logins it makes admins when not all. `LOGS IN WITH` now lists settings users' logins too.
   A 0.6.0 server's listing still shows as before.
+- **The login and link pages keep a long host whole where they can.** The login card widens to fit it on one line.
+  When the screen is too narrow, the host moves to a line of its own, and only if it still doesn't fit does it break,
+  after a dot and never at a hyphen inside a name. Your own pages can use this marked-up host as `$host`.
 
 ## [0.6.0] - 2026-10-31
 
