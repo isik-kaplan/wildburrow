@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 ANSWERS = {
     "names": "names", protocol.SESSIONS: protocol.SESSIONS, "kick": "kicked", "logins": "logins", "link": "linked",
     "end-login": "ended-login", protocol.DENY: "denied", protocol.USERS: "users", "invite": "invited",
-    "set-admin": "admin-set", "remove-user": "removed-user",
+    "set-admin": "admin-set", "remove-user": "removed-user", protocol.TOKENS: protocol.TOKENS, "register": "registered",
 }  # fmt: skip
 # What a client from 0.5.0 says of itself in its hello.
 CLIENT_FIELDS = ("version", "platform")
@@ -262,8 +262,13 @@ class WebSocketTransport:
                 return await self._ctx.set_admin(session, message, command)
             case "remove-user":
                 return await self._ctx.remove_user(session, message, command)
+            case protocol.TOKENS:
+                return await self._ctx.token_listing(session)
+            case "register":
+                return self._ctx.register(session, message)
             case _:
-                return self._ctx.deny(session, [str(token) for token in message["tokens"]], command)
+                tokens = [str(token) for token in message.get("tokens", [])]
+                return self._ctx.deny(session, tokens, command, [str(name) for name in message.get("names", [])])
 
     def _end(self, connection: ServerConnection, reason: str) -> None:
         task = asyncio.create_task(connection.close(protocol.CLOSE_ENDED, reason[:MAX_REASON]))

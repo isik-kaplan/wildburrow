@@ -456,7 +456,7 @@ def test_bodies_are_kept_squeezed_when_that_comes_out_smaller() -> None:
 @pytest.fixture
 async def recorder(tmp_path: Path) -> AsyncIterator[Recorder]:
     found = Recorder(Database(Storage(str(tmp_path / "w.db"), Record.EVERYTHING, DAY, None, 64), Clock()))
-    assert await found.open("0.5.0", "host", "example.com", {"domain": "example.com"}) == set()
+    assert await found.open("0.5.0", "host", "example.com", {"domain": "example.com"}) == (set(), {})
     yield found
     await found.close()
 
@@ -487,7 +487,7 @@ async def test_a_recorder_keeps_what_its_storage_says(recorder: Recorder) -> Non
 
 async def test_without_a_database_nothing_is_written() -> None:
     record = Recorder()
-    assert await record.open("0.5.0", "host", "example.com", {}) == set()
+    assert await record.open("0.5.0", "host", "example.com", {}) == (set(), {})
     assert (record.history, record.traffic, record.traffic_max, record.now()) == (False, False, 0, 0)
     record.auth("websocket", "token", PEER, ALICE, None)
     record.session_opened(session(), True, {})
@@ -504,7 +504,7 @@ async def test_logins_identities_and_tokens(recorder: Recorder) -> None:
         (1, "token", "alice-token", "alice2")
     ]
     assert await rows(recorder, "SELECT * FROM tokens") == [
-        ("t1", 1, "alice", '["alice"]', NOW + DAY, NOW, NOW, None, None)
+        ("t1", 1, "alice", '["alice"]', NOW + DAY, NOW, NOW, None, None, None)
     ]
     assert await rows(
         recorder, "SELECT transport, method, address, port, ok, identity_id, reason FROM auth_attempts"
@@ -530,6 +530,36 @@ async def test_an_identity_is_kept_as_its_users(recorder: Recorder) -> None:
     assert await rows(recorder, "SELECT user_id FROM identities WHERE subject = 'SHA256:x'") == [(1,)]
 
 
+async def test_tokens_registered_used_and_denied_by_name_are_listed_and_kept(tmp_path: Path) -> None:
+    path = str(tmp_path / "w.db")
+    first = Recorder(Database(Storage(path), Clock()))
+    await first.open("0.8.0", "host", "example.com", {})
+    assert await first.tokens() == []
+    first.register("t1", "alice", ["alice"], NOW + DAY, NOW - 5)
+    first.register("t3", "ci", None, None, NOW - 9)
+    # Registering again, or using it, fills in only what wasn't known.
+    first.register("t1", "mallory", None, None, 1)
+    first.auth("websocket", "token", PEER, dataclasses.replace(ALICE, issued=NOW - 5), None)
+    first.deny_name("bob", NOW + 60, LAPTOP)
+    assert await first.tokens() == [
+        {"id": "t3", "name": "ci", "names": None, "expires": None, "issued": NOW - 9, "first_used": None,
+         "last_used": None, "denied": None},
+        {"id": "t1", "name": "alice", "names": ["alice"], "expires": NOW + DAY, "issued": NOW - 5,
+         "first_used": NOW, "last_used": NOW, "denied": None},
+        {"id": "name:bob", "name": "bob", "names": None, "expires": None, "issued": None, "first_used": None,
+         "last_used": None, "denied": NOW + 60},
+    ]  # fmt: skip
+    await first.close()
+    second = Recorder(Database(Storage(path), Clock()))
+    assert await second.open("0.8.0", "host", "example.com", {}) == (set(), {"bob": NOW + 60})
+    assert await rows(second, "SELECT row_id, revoked_at FROM tokens_events") == [("name:bob", NOW + 60)]
+    await second.close()
+
+
+async def test_without_a_database_there_are_no_tokens_to_list() -> None:
+    assert await Recorder().tokens() == []
+
+
 async def test_a_token_any_name_may_use_is_kept_as_such(recorder: Recorder) -> None:
     recorder.auth("websocket", "token", PEER, Identity("ci", "token", "ci-token", token="t2"), None)
     assert await rows(recorder, "SELECT id, names, expires_at FROM tokens") == [("t2", None, None)]
@@ -544,7 +574,7 @@ async def test_denied_tokens_are_kept_for_the_next_run(tmp_path: Path) -> None:
     first.deny("t9", LAPTOP)
     await first.close()
     second = Recorder(Database(Storage(path), Clock()))
-    assert await second.open("0.5.0", "host", "example.com", {}) == {"t1", "t9"}
+    assert await second.open("0.5.0", "host", "example.com", {}) == ({"t1", "t9"}, {})
     assert await rows(second, "SELECT id, revoked_at, revoked_by_identity_id FROM tokens ORDER BY id") == [
         ("t1", NOW, 2), ("t9", NOW, 2),
     ]  # fmt: skip

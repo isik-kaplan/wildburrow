@@ -1,5 +1,6 @@
 import signal
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from importlib.metadata import version
 from typing import Any
@@ -39,8 +40,22 @@ def cli(ctx: click.Context, no_input: bool) -> int | None:
 def _start(ctx: click.Context, no_input: bool) -> int | None:
     if no_input:
         ask.turn_off()
+    # `tokens` registers them itself.
+    if ctx.invoked_subcommand != "tokens" and saved.setting("sync_notice"):
+        _sync_notice()
     if ctx.invoked_subcommand is None:
         return _alone(ctx)
+
+
+def _sync_notice() -> None:
+    servers = Counter(entry["server"] for entry in tokens.unsynced())
+    for where, count in servers.items():
+        minted = "1 token minted with --offline isn't" if count == 1 else f"{count} tokens minted with --offline aren't"
+        click.echo(
+            f"{minted} registered with {where}; run: wildburrow tokens sync "
+            "(or: wildburrow config set sync-notice off)",
+            err=True,
+        )
 
 
 def _alone(ctx: click.Context) -> int:

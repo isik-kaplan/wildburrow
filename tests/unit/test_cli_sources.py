@@ -59,7 +59,8 @@ LOCKED = ["--lock", "base:pw"]
 
 
 def test_every_setting_has_samples() -> None:
-    assert set(SAMPLES) == set(saved.SAVED)
+    # sync_notice is read before any command, connect's options among them; test_cli_tokens gives it every way.
+    assert set(SAMPLES) == set(saved.SAVED) - {"sync_notice"}
 
 
 class Opened:

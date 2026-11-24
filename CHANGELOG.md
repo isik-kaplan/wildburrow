@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`wildburrow tokens deny --name NAME`** refuses every signed token for `NAME` minted until now, used or not,
+  without knowing their ids, and ends their sessions. Tokens for the name minted after it work.
+- **Minting registers the token with the server**, so `wildburrow tokens` lists it from any admin's machine before
+  it's used. When it can't be registered, it isn't minted unless you say so in a terminal, or pass `--offline`.
+- **`wildburrow tokens` lists the server's tokens** for an admin, with when each was last used and whether it's
+  denied, along with this machine's mints.
+- **`wildburrow tokens sync`** registers tokens minted with `--offline`. Until then every command says how many wait,
+  unless `wildburrow config set sync-notice off`.
+
+### Fixed
+
+- **`wildburrow tokens deny ""` no longer locks every key and password login out of the server.** Their token id is
+  empty, so denying the empty id refused them all, and kept refusing after a restart. Only a token id can be denied
+  now; anything else is refused with what it wasn't.
+- **Messages no longer say a token can't be withdrawn**, or point to `WILDBURROW_AUTH_TOKEN_DENY` where
+  `wildburrow tokens deny` does it.
+
 ## [0.7.0] - 2026-11-04
 
 ### Breaking

@@ -13,7 +13,6 @@ from wildburrow.cli.output import when
 from wildburrow.cli.settings import Tunnel
 from wildburrow.client import websocket
 from wildburrow.client.config import ClientConfig, config_path, read_config, write_config
-from wildburrow.config import PREFIX
 from wildburrow.service import ServiceError
 
 SERVER = "tunnel.example.com"
@@ -137,8 +136,8 @@ def test_kick_says_what_ended_and_how_it_could_come_back(
     assert cli.main(["kick", *args]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "ended a1b2c3d4e5f6: alice over websocket, holding alice, *.alice",
-        f"  their token 3f9a0c4e1b2d7a65 logs in until {when(LATER)}; to stop it sooner, add the id to "
-        f"{PREFIX}AUTH_TOKEN_DENY",
+        f"  their token 3f9a0c4e1b2d7a65 logs in until {when(LATER)}; to stop it sooner: "
+        "wildburrow tokens deny 3f9a0c4e1b2d7a65",
         "ended 0f0f0f0f0f0f: laptop over ssh, holding no names",
     ]
     assert server.asked == [(logged_in, [target], ask.password)]
@@ -147,7 +146,7 @@ def test_kick_says_what_ended_and_how_it_could_come_back(
 @pytest.mark.parametrize(
     ("entry", "hint"),
     [
-        ({"expires": None}, "their token 3f9a0c4e1b2d7a65 logs in for good; to stop it sooner, add the id to"),
+        ({"expires": None}, "their token 3f9a0c4e1b2d7a65 logs in for good; to stop it sooner: wildburrow tokens deny"),
         ({"expires": 1}, None),
         ({"token": "", "via": "key"}, "alice can connect again with the same key"),
         ({"token": "", "via": "password"}, "alice can connect again with the same password"),

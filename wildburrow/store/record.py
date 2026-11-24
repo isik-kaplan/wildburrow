@@ -23,7 +23,9 @@ USER_AGENT = "user-agent"
 # Rows another row points at before the batch carrying them is written get their id from the server; the rest from
 # SQLite.
 IDENTITIES = "SELECT method, subject, id FROM identities"
-DENIED = "SELECT id FROM tokens WHERE revoked_at IS NOT NULL"
+DENIED = "SELECT id, name, revoked_at FROM tokens WHERE revoked_at IS NOT NULL"
+# A row denying every token for a name minted before its revoked_at; no token's id has a colon.
+NAME_ROW = "name:"
 RUN = "INSERT INTO runs (id, version, hostname, domain, settings, started_at) VALUES (?, ?, ?, ?, ?, ?)"
 RUN_STOPPED = "UPDATE runs SET stopped_at = ? WHERE id = ?"
 LOG = "INSERT INTO logs (run_id, at, level, logger, message) VALUES (?, ?, ?, ?, ?)"
@@ -32,10 +34,31 @@ IDENTITY = (
     "VALUES (?, ?, ?, ?, ?, ?, ?)"
 )
 IDENTITY_SEEN = "UPDATE identities SET name = ?, user_id = ?, last_seen_at = ? WHERE id = ?"
+# What a token says of itself is kept from whichever of registering, using or denying it came first.
 GRANT_USED = (
-    "INSERT INTO tokens (id, identity_id, name, names, expires_at, first_used_at, last_used_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?) "
-    "ON CONFLICT (id) DO UPDATE SET identity_id = excluded.identity_id, last_used_at = excluded.last_used_at"
+    "INSERT INTO tokens (id, identity_id, name, names, expires_at, issued_at, first_used_at, last_used_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT (id) DO UPDATE SET identity_id = excluded.identity_id, last_used_at = excluded.last_used_at, "
+    "first_used_at = coalesce(tokens.first_used_at, excluded.first_used_at), "
+    "name = coalesce(tokens.name, excluded.name), names = coalesce(tokens.names, excluded.names), "
+    "expires_at = coalesce(tokens.expires_at, excluded.expires_at), "
+    "issued_at = coalesce(tokens.issued_at, excluded.issued_at)"
+)
+GRANT_REGISTERED = (
+    "INSERT INTO tokens (id, name, names, expires_at, issued_at) VALUES (?, ?, ?, ?, ?) "
+    "ON CONFLICT (id) DO UPDATE SET "
+    "name = coalesce(tokens.name, excluded.name), names = coalesce(tokens.names, excluded.names), "
+    "expires_at = coalesce(tokens.expires_at, excluded.expires_at), "
+    "issued_at = coalesce(tokens.issued_at, excluded.issued_at)"
+)
+NAME_DENIED = (
+    "INSERT INTO tokens (id, name, revoked_at, revoked_by_identity_id) VALUES (?, ?, ?, ?) "
+    "ON CONFLICT (id) DO UPDATE SET revoked_at = excluded.revoked_at, "
+    "revoked_by_identity_id = excluded.revoked_by_identity_id"
+)
+TOKENS = (
+    "SELECT id, name, names, expires_at, issued_at, first_used_at, last_used_at, revoked_at FROM tokens "
+    "ORDER BY coalesce(issued_at, first_used_at, revoked_at), id"
 )
 GRANT_DENIED = (
     "INSERT INTO tokens (id, revoked_at, revoked_by_identity_id) VALUES (?, ?, ?) "
@@ -161,17 +184,26 @@ class Recorder:
 
     # The server
 
-    async def open(self, version: str, hostname: str, domain: str, settings: dict[str, Any]) -> set[str]:
-        """Opens the record for a new run; the ids of the tokens denied in earlier ones."""
+    async def open(
+        self, version: str, hostname: str, domain: str, settings: dict[str, Any]
+    ) -> tuple[set[str], dict[str, int]]:
+        """Opens the record for a new run; the ids of the tokens denied in earlier ones, and the names denied, each
+        with when the tokens for it stop being minted early enough to be refused."""
         if self._database is None:
-            return set()
+            return set(), {}
         await self._database.open()
         found = await self._database.read(IDENTITIES)
         self._identities = {(method, subject): identity_id for method, subject, identity_id in found}
         self.run_id = self._id("runs")
         # A run's id is the largest there plus one, as sqlite would give it, so nothing tells the two apart.
         self._write(RUN, self.run_id, version, hostname, domain, _json(settings), self.now())  # pragma: no mutate
-        return {token for (token,) in await self._database.read(DENIED)}
+        ids, names = set(), {}
+        for token, name, revoked_at in await self._database.read(DENIED):
+            if token.startswith(NAME_ROW):
+                names[name] = revoked_at
+            else:
+                ids.add(token)
+        return ids, names
 
     async def close(self) -> None:
         if self._database is None:
@@ -203,7 +235,10 @@ class Recorder:
             if identity.token:
                 names = None if identity.names is None else _json(list(identity.names))
                 now = self.now()
-                self._write(GRANT_USED, identity.token, identity_id, identity.name, names, identity.expires, now, now)
+                self._write(
+                    GRANT_USED, identity.token, identity_id, identity.name, names, identity.expires, identity.issued,
+                    now, now,
+                )  # fmt: skip
         self._kept(
             AUTH_ATTEMPT, self.run_id, self.now(), transport, method, peer.host, peer.port, int(identity is not None),
             identity_id, reason,
@@ -211,6 +246,24 @@ class Recorder:
 
     def deny(self, token: str, by: Identity) -> None:
         self._tracked(acting(by), GRANT_DENIED, token, self.now(), self.identity(by))
+
+    def deny_name(self, name: str, before: int, by: Identity) -> None:
+        self._tracked(acting(by), NAME_DENIED, f"{NAME_ROW}{name}", name, before, self.identity(by))
+
+    def register(self, token: str, name: str, names: list[str] | None, expires: int | None, issued: int) -> None:
+        """A token minted elsewhere, so it's listed before it's used."""
+        self._write(GRANT_REGISTERED, token, name, None if names is None else _json(names), expires, issued)
+
+    async def tokens(self) -> list[dict[str, Any]]:
+        """Every signed token on record, and every name denied, oldest first."""
+        if self._database is None:
+            return []
+        await self._database.flush()
+        fields = ("id", "name", "names", "expires", "issued", "first_used", "last_used", "denied")
+        rows = [dict(zip(fields, row, strict=True)) for row in await self._database.read(TOKENS)]
+        for row in rows:
+            row["names"] = None if row["names"] is None else json.loads(row["names"])
+        return rows
 
     def session_opened(self, session: Session, admin: bool, client: dict[str, Any]) -> None:
         identity_id = self.identity(session.identity)

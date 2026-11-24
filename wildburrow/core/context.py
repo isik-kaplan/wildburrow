@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import hashlib
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,7 @@ from wildburrow.core.indexing import Indexing, indexed
 from wildburrow.core.locks import Lock, Locking, build, entry_id
 from wildburrow.core.names import InvalidName, Name, allows, host_labels, parse_name
 from wildburrow.core.registry import NameTaken, Registry
-from wildburrow.core.sessions import Policy, Session, Sessions, describe, same
+from wildburrow.core.sessions import GRACE_SECONDS, Policy, Session, Sessions, describe, same
 from wildburrow.core.types import (
     Credential,
     Destination,
@@ -30,8 +31,9 @@ from wildburrow.core.types import (
 )
 from wildburrow.core.users import INVITE_SECONDS, Key, UserError, Users
 from wildburrow.locks import LABEL, LINK, PAGES, next_links, safe_path
-from wildburrow.store.record import Recorder, acting
+from wildburrow.store.record import NAME_ROW, Recorder, acting
 from wildburrow.store.users import UserStore
+from wildburrow.tokens import is_id as is_token_id
 
 if TYPE_CHECKING:
     from wildburrow.certs.manager import CertManager
@@ -77,6 +79,8 @@ class ServerContext:
     users: Users = field(default_factory=lambda: Users(UserStore(None)))
     # Ids of signed tokens denied while the server runs, or in an earlier run on file.
     denied: set[str] = field(default_factory=set)
+    # Names whose signed tokens are denied, each with the moment those minted before it are refused from.
+    denied_names: dict[str, int] = field(default_factory=dict)
     # What clients are told about logging in, published once the transports know their ports.
     info: bytes = b"{}"
 
@@ -168,7 +172,7 @@ class ServerContext:
         """Who `credential` logs in as, if anyone, with every try recorded; a token denied lets no one in."""
         identity = await self.authenticator.authenticate(credential, peer)
         reason = None if identity is not None else REFUSED
-        if identity is not None and identity.token in self.denied:
+        if identity is not None and self._denied(identity):
             identity, reason = None, DENIED
         elif identity is not None and not await self.users.admit(identity):
             identity, reason = None, NOT_A_USER
@@ -192,20 +196,72 @@ class ServerContext:
         self.sessions.close(session)
         self.record.session_closed(session, session.reason, session.ended_by)
 
-    def deny(self, actor: Session, tokens: list[str], command: int | None = None) -> dict[str, Any]:
-        """Stops `tokens` logging in from now on, and ends their sessions; only for an admin."""
+    def _denied(self, identity: Identity) -> bool:
+        """Whether `identity` logs in with a signed token denied by its id, or by its name as minted too early."""
+        if not identity.token:
+            return False
+        before = self.denied_names.get(identity.name)
+        return identity.token in self.denied or (
+            before is not None and identity.issued is not None and identity.issued < before
+        )
+
+    def deny(
+        self, actor: Session, tokens: list[str], command: int | None = None, names: Sequence[str] = ()
+    ) -> dict[str, Any]:
+        """
+        Stops `tokens` logging in from now on, and every signed token for one of `names` minted until now; ends their
+        sessions. Only for an admin.
+        """
         if actor.identity not in self.policy.admins:
             return {"error": "only an admin can deny tokens"}
-        ended = []
-        for token in dict.fromkeys(tokens):
+        tokens, names = list(dict.fromkeys(tokens)), list(dict.fromkeys(names))
+        # An id checked, as a key or password login's empty one denied would lock every one of them out.
+        if bad := [token for token in tokens if not is_token_id(token)]:
+            return {"error": f"not a token id: {', '.join(map(repr, bad))}; `wildburrow tokens` lists them"}
+        if "" in names:
+            return {"error": "a name to deny can't be empty"}
+        # A margin over now, for a minting machine whose clock runs a little ahead.
+        before = int(time.time()) + GRACE_SECONDS
+        for token in tokens:
             self.denied.add(token)
             self.record.deny(token, actor.identity)
-            for session in self.sessions:
-                if session.identity.token == token:
-                    session.ended_by = command
-                    session.end(f"its token was denied by {actor.identity.name}")
-                    ended.append(session.id)
-        return {"tokens": list(dict.fromkeys(tokens)), "ended": ended}
+        for name in names:
+            self.denied_names[name] = before
+            self.record.deny_name(name, before, actor.identity)
+        ended = []
+        for session in self.sessions:
+            if self._denied(session.identity):
+                session.ended_by = command
+                session.end(f"its token was denied by {actor.identity.name}")
+                ended.append(session.id)
+        answer: dict[str, Any] = {"tokens": tokens, "ended": ended, "memory": self.users.memory}
+        return answer | ({"names": names, "before": before} if names else {})
+
+    def register(self, actor: Session, request: dict[str, Any]) -> dict[str, Any]:
+        """A token minted elsewhere, recorded so it's listed before it's used; only for an admin."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can register tokens"}
+        token, name, names = request.get("id"), request.get("name"), request.get("names")
+        expires, issued = request.get("expires"), request.get("issued")
+        if not (isinstance(token, str) and is_token_id(token)):
+            return {"error": f"not a token id: {token!r}"}
+        if not (isinstance(name, str) and name):
+            return {"error": "a token needs a name"}
+        if names is not None and not (isinstance(names, list) and all(isinstance(each, str) for each in names)):
+            return {"error": "a token's names are a list of names, or null for any"}
+        if not all(type(value) is int for value in (issued, *([] if expires is None else [expires]))):
+            return {"error": "a token's issued and expires are unix seconds"}
+        self.record.register(token, name, names, expires, issued)
+        return {"id": token, "memory": self.users.memory}
+
+    async def token_listing(self, actor: Session) -> dict[str, Any]:
+        """Every signed token the server has met, registered or denied, and every name denied; only for an admin."""
+        if actor.identity not in self.policy.admins:
+            return {"error": "only an admin can list tokens"}
+        rows = await self.record.tokens()
+        listed = [row for row in rows if not row["id"].startswith(NAME_ROW)]
+        names = {row["name"]: row["denied"] for row in rows if row["id"].startswith(NAME_ROW)}
+        return {"tokens": listed, "denied_names": names, "memory": self.users.memory}
 
     def reach(self, actor: Session) -> dict[str, Any]:
         """Whether `actor` is an admin, and how far the server lets admins see and end sessions."""

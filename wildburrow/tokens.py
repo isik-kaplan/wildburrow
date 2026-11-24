@@ -52,6 +52,11 @@ def new_id() -> str:
     return secrets.token_hex(ID_BYTES)
 
 
+def is_id(text: str) -> bool:
+    """Whether `text` could be a signed token's id, as `new_id` makes them."""
+    return len(text) == 2 * ID_BYTES and all(c in "0123456789abcdef" for c in text)
+
+
 def encode(payload: bytes, signature: bytes) -> str:
     return f"{PREFIX}{_text(payload)}.{_text(signature)}"
 

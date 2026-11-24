@@ -673,6 +673,7 @@ async def test_the_login_line_a_minted_token_prints_logs_in(
         DOMAIN,
         "--identity",
         str(credentials.key),
+        "--offline",
     ]
     assert await asyncio.to_thread(cli.main, minting) == 0
     [line] = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  wildburrow login ")]

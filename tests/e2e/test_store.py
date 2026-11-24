@@ -2,16 +2,19 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.conftest import TIMEOUT, Backend, Connect, Credentials, StartServer
+from tests.conftest import DOMAIN, TIMEOUT, Backend, Connect, Credentials, StartServer
 from tests.e2e.test_locks import Browser, at
 from tests.e2e.test_websocket import client_config, local, signed, start_client, stop
 from wildburrow import cli, config, tokens
+from wildburrow.cli import tokens as tokens_log
+from wildburrow.cli.output import when
 from wildburrow.client import websocket
 from wildburrow.client.config import config_path, write_config
 from wildburrow.client.locking import LockRequest
@@ -86,7 +89,7 @@ async def test_a_run_is_recorded_in_full_and_a_denied_token_stays_denied(
     [(denial, request, answer)] = read(path, "SELECT id, request, answer FROM commands WHERE kind = 'deny'")
     assert ended_by == denial
     assert json.loads(request) == {"type": "deny", "tokens": [token_id]}
-    assert json.loads(answer) == {"tokens": [token_id], "ended": [alice]}
+    assert json.loads(answer) == {"tokens": [token_id], "ended": [alice], "memory": False}
     assert read(path, "SELECT closed_at IS NOT NULL, lock_id IS NOT NULL FROM tunnels") == [(1, 1)]
     assert read(path, "SELECT name FROM tunnel_names") == [("foo",)]
     [(link,)] = read(path, "SELECT id FROM commands WHERE kind = 'link'")
@@ -107,6 +110,47 @@ async def test_a_run_is_recorded_in_full_and_a_denied_token_stays_denied(
     assert out.lines[-1] == "error: authentication failed"
     await running.server.__aexit__(None, None, None)
     assert read(path, "SELECT ok, reason FROM auth_attempts WHERE run_id = 2") == [(0, "denied")]
+
+
+async def test_a_minted_token_is_listed_before_its_used_and_its_name_stays_denied(
+    start_server: StartServer,
+    credentials: Credentials,
+    backend: Backend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    path = tmp_path / "wildburrow.db"
+    running = await start_server(**env(credentials, path))
+    write_config(config_path(), client_config(credentials, "key"))
+    monkeypatch.setattr(websocket, "connect", local(running))
+    assert await asyncio.to_thread(cli.main, ["tokens", "new", "alice", "--names", "foo", "-y"]) == 0
+    token = re.search(r"--token (\S+)", capsys.readouterr().out)[1]  # type: ignore[index]
+    token_id = tokens.decode(token)[0].id
+    # Gone from this machine, the server still lists it, unused.
+    tokens_log.log_path().unlink()
+    assert await asyncio.to_thread(cli.main, ["tokens"]) == 0
+    [_, row] = capsys.readouterr().out.splitlines()
+    assert row.split() == [token_id, "alice", "foo", *when(tokens.decode(token)[0].expires).split(), "-", "-", DOMAIN]
+    task, out = start_client(running, client_config(credentials, "token", token=token), backend.port, ["foo"])
+    await out.wait_for("ready:")
+    assert await asyncio.to_thread(cli.main, ["tokens", "deny", "--name", "alice"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "ended 1 of their sessions"
+    assert await out.wait_for("closed:") == "closed: its token was denied by laptop"
+    await asyncio.wait_for(task, TIMEOUT)
+    await running.server.__aexit__(None, None, None)
+
+    running = await start_server(**env(credentials, path))
+    monkeypatch.setattr(websocket, "connect", local(running))
+    task, out = start_client(running, client_config(credentials, "token", token=token), backend.port, ["foo"])
+    assert await asyncio.wait_for(task, TIMEOUT) == 1
+    assert await asyncio.to_thread(cli.main, ["tokens"]) == 0
+    listed = capsys.readouterr().out.splitlines()
+    assert listed[1].split()[-2:] == ["denied", DOMAIN]
+    assert listed[2].startswith("denied: every token for alice minted before ")
+    await running.server.__aexit__(None, None, None)
 
 
 async def test_a_kicked_session_is_recorded_as_ended_by_the_kick(

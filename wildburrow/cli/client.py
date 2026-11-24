@@ -26,7 +26,6 @@ from wildburrow.cli.settings import (
     options,
     use_limit,
 )
-from wildburrow.cli.tokens import DENY
 from wildburrow.client import discovery, ssh, websocket
 from wildburrow.client.config import ClientConfig, config_path, forget_login, read_config, write_config
 from wildburrow.config import PREFIX
@@ -413,7 +412,7 @@ def _still_valid(entry: dict[str, Any]) -> str | None:
     if expires is not None and expires <= time.time():
         return None
     until = "for good" if expires is None else f"until {when(expires)}"
-    return f"their token {entry['token']} logs in {until}; to stop it sooner, add the id to {DENY}"
+    return f"their token {entry['token']} logs in {until}; to stop it sooner: wildburrow tokens deny {entry['token']}"
 
 
 class Logout(Settings, prefix=CLIENT_PREFIX):
@@ -563,20 +562,34 @@ def _links(config: ClientConfig) -> int:
     return 0
 
 
-@options(Remote, interactive=never, current=saved.current)
+class Deny(Remote):
+    name = Setting(
+        str, "every token for NAME minted until now, used or not; repeatable", default=(), multiple=True,
+        metavar="NAME", env=NoEnv(reason="a denial is made once, by hand; a variable would repeat it on every one"),
+        question=NoQuestion(reason="deny takes what to deny on its command line, as IDs or names, and asks nothing"),
+    )  # fmt: skip
+
+
+@options(Deny, interactive=never, current=saved.current)
 @tokens.tokens_group.command("deny")
-@click.argument("ids", nargs=-1, required=True, metavar="ID...")
-def deny_tokens(ids: tuple[str, ...], settings: Remote) -> int:
-    """Stop tokens logging in, by the ID `tokens` lists, ending their sessions now; for an admin of the server."""
-    return _deny_tokens(ids, settings)
+@click.argument("ids", nargs=-1, metavar="[ID]...")
+def deny_tokens(ids: tuple[str, ...], settings: Deny) -> int:
+    """Stop tokens logging in, by the ID `tokens` lists or by name, ending their sessions now; for an admin."""
+    return _deny_tokens(ids, tuple(settings.name), settings)
 
 
-def _deny_tokens(ids: tuple[str, ...], settings: Remote) -> int:
-    answer = _asked(websocket.deny, reach(settings), ids)
+def _deny_tokens(ids: tuple[str, ...], names: tuple[str, ...], settings: Remote) -> int:
+    if not ids and not names:
+        raise Failure("name the tokens to deny: their IDs, or --name NAME", 2)
+    answer = _asked(lambda *args: websocket.deny(*args, names=names), reach(settings), ids)
     if "error" in answer:
         raise Failure(str(answer["error"]))
     for token in answer["tokens"]:
         click.echo(f"denied {token}")
+    for name in answer.get("names", []):
+        click.echo(f"denied every token for {name} minted before {when(answer['before'])}; mint new ones after that")
+    if answer.get("memory"):
+        click.echo("the server keeps its record in memory, so it forgets the denial on restart", err=True)
     if answer["ended"]:
         click.echo(f"ended {len(answer['ended'])} of their sessions")
     return 0

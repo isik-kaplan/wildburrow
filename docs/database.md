@@ -54,8 +54,9 @@ holds, is [wildburrow/store/schema.sql](../wildburrow/store/schema.sql) and the 
 
 ## Events
 
-Every change to `users`, `user_keys`, `invites`, an identity's user or name, and a token's denial is copied into
-`<table>_events` by triggers, so a change made by hand is caught too: the row after the change (before it, for a
+Every change to `users`, `user_keys`, `invites`, an identity's user or name, and a token's denial (a name's tokens'
+too, kept as the `tokens` row `name:NAME`) is copied into `<table>_events` by triggers, so a change made by hand is
+caught too: the row after the change (before it, for a
 delete), whether it was an insert, update or delete, when, and a `context` saying who made it and from where.
 
 ```sh

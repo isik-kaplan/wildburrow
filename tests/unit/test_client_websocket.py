@@ -850,6 +850,48 @@ async def test_denying_needs_a_server_that_denies() -> None:
     assert answered.sent[1] == {"type": "deny", "tokens": ["t"]}
 
 
+async def test_denying_names_needs_a_server_that_denies_them() -> None:
+    older = FakeControl([welcomed_with(protocol.DENY)])
+    with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.8\.0 or later$"):
+        await websocket.deny(TOKEN_CONFIG, [], input, fake_connector(older), names=["bob"])
+    answer = {"tokens": [], "ended": [], "names": ["bob"], "before": 7, "memory": False}
+    answered = FakeControl([welcomed_with(protocol.TOKENS), protocol.encode("denied", **answer)])
+    assert await websocket.deny(TOKEN_CONFIG, [], input, fake_connector(answered), names=["bob"]) == {
+        "type": "denied", **answer
+    }  # fmt: skip
+    assert answered.sent[1] == {"type": "deny", "tokens": [], "names": ["bob"]}
+
+
+GRANTS = [{"id": f"{n}" * 16, "name": "bob", "names": None, "expires": None, "issued": 1} for n in (1, 2)]
+
+
+async def test_tokens_registers_each_then_lists_over_one_login() -> None:
+    older = FakeControl([welcomed_with(protocol.USERS)])
+    with pytest.raises(ClientError, match=r"^s runs an older wildburrow; this needs 0\.8\.0 or later$"):
+        await websocket.tokens(TOKEN_CONFIG, GRANTS, True, input, fake_connector(older))
+    registered = [protocol.encode("registered", id=grant["id"], memory=False) for grant in GRANTS]
+    listing = protocol.encode("tokens", tokens=[{"id": "x"}], denied_names={"bob": 7}, memory=False)
+    control = FakeControl([welcomed_with(protocol.TOKENS), *registered, listing])
+    assert await websocket.tokens(TOKEN_CONFIG, GRANTS, True, input, fake_connector(control)) == {
+        "type": "tokens", "tokens": [{"id": "x"}], "denied_names": {"bob": 7}, "memory": False,
+        "registered": [grant["id"] for grant in GRANTS],
+    }  # fmt: skip
+    assert control.sent[1:] == [{"type": "register", **grant} for grant in GRANTS] + [{"type": "tokens"}]
+
+
+async def test_tokens_registers_without_listing_and_stops_at_a_refusal() -> None:
+    control = FakeControl([welcomed_with(protocol.TOKENS), protocol.encode("registered", id="1", memory=True)])
+    assert await websocket.tokens(TOKEN_CONFIG, GRANTS[:1], False, input, fake_connector(control)) == {
+        "memory": True, "registered": [GRANTS[0]["id"]]
+    }  # fmt: skip
+    refusal = protocol.encode("registered", error="only an admin can register tokens")
+    refused = FakeControl([welcomed_with(protocol.TOKENS), refusal])
+    assert await websocket.tokens(TOKEN_CONFIG, GRANTS, False, input, fake_connector(refused)) == {
+        "error": "only an admin can register tokens", "registered": []
+    }  # fmt: skip
+    assert len(refused.sent) == 2
+
+
 async def test_joining_sends_the_invite_before_any_login() -> None:
     control = FakeControl([protocol.encode("joined", name="carol")])
     config = ClientConfig("s", url="http://s")

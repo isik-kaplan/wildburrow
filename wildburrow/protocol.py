@@ -22,7 +22,9 @@ LOCK = "lock"
 INDEX = "index"
 DENY = "deny"
 USERS = "users"
-SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0", INDEX: "0.5.0", DENY: "0.5.0", USERS: "0.6.0"}
+# Listing and registering tokens, and denying a name's.
+TOKENS = "tokens"
+SINCE = {SESSIONS: "0.3.0", LOCK: "0.4.0", INDEX: "0.5.0", DENY: "0.5.0", USERS: "0.6.0", TOKENS: "0.8.0"}
 # Sent instead of a hello, by someone setting up the login an invite is for; answered, then closed.
 JOIN = "join"
 CLOSE_PROTOCOL_ERROR = 4400

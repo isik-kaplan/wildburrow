@@ -811,6 +811,7 @@ PAGES = [
     [], ["connect"], ["login"], ["logout"], ["names"], ["tunnels"], ["kick"], ["links"], ["links", "add"],
     ["links", "end"], ["config"], ["config", "set"], ["config", "unset"],
     ["serve"], ["passwords"], ["passwords", "hash"], ["tokens"], ["tokens", "new"], ["tokens", "deny"],
+    ["tokens", "sync"],
     ["users"], ["users", "invite"], ["users", "promote"], ["users", "demote"], ["users", "remove"], ["join"],
     ["service"], ["service", "install"], ["service", "edit"], ["service", "uninstall"], ["service", "status"],
 ]  # fmt: skip

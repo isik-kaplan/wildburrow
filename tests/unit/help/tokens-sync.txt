@@ -1,0 +1,7 @@
+Usage: wildburrow tokens sync [OPTIONS]
+
+  Register the tokens minted here with --offline with the saved login's server, so any admin can
+  list them.
+
+Options:
+  -h, --help  Show this message and exit.

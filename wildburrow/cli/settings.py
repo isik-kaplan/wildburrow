@@ -158,6 +158,16 @@ class Remote(Settings, prefix=CLIENT_PREFIX):
     connection = Group(Connection)
 
 
+class Notices(Settings, prefix=CLIENT_PREFIX):
+    """What every command may say before it starts, read before any of its options."""
+
+    sync_notice = Setting(
+        bool, "say when tokens minted with --offline wait to be registered", default=True,
+        option=NoOption(reason="every command reads it before its own options; `wildburrow config set` saves it"),
+        question=NoQuestion(reason="a notice turned off once stays off, so it's saved rather than asked"),
+    )  # fmt: skip
+
+
 class Tunnel(
     Remote,
     prompt=Prompt.QUESTIONARY,

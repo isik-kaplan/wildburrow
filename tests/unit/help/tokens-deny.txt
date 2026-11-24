@@ -1,7 +1,7 @@
-Usage: wildburrow tokens deny [OPTIONS] ID...
+Usage: wildburrow tokens deny [OPTIONS] [ID]...
 
-  Stop tokens logging in, by the ID `tokens` lists, ending their sessions now; for an admin of the
-  server.
+  Stop tokens logging in, by the ID `tokens` lists or by name, ending their sessions now; for an
+  admin.
 
 Options:
   --server TEXT                 server to use instead of the saved one
@@ -16,4 +16,5 @@ Options:
   --retry-delay SECONDS         first wait before reconnecting, doubled after each failure
                                 (default: 1)
   --retry-max SECONDS           longest wait between reconnects (default: 30)
+  --name NAME                   every token for NAME minted until now, used or not; repeatable
   -h, --help                    Show this message and exit.

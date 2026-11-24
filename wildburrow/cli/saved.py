@@ -10,14 +10,14 @@ from isik.common.settings.resolution import display_default, walk
 
 from wildburrow.cli.errors import Failure
 from wildburrow.cli.output import table
-from wildburrow.cli.settings import CLIENT_PREFIX, Tunnel
+from wildburrow.cli.settings import CLIENT_PREFIX, Notices, Tunnel
 from wildburrow.client.config import LOGIN, config_path, read_toml, write_toml
 
 FILE = "config.toml"
 # Every client setting a variable can give, by the name it's saved under: its variable without the prefix.
 SAVED = {
     entry.env_name.removeprefix(CLIENT_PREFIX).lower(): entry
-    for entry in walk(Tunnel, {})
+    for entry in [*walk(Tunnel, {}), *walk(Notices, {})]
     if isinstance(entry.declaration, Setting) and entry.env_name
 }
 
@@ -30,6 +30,16 @@ def current() -> dict[str, str]:
     """What's saved, by variable, for the settings a login doesn't hold: those come in as the saved login."""
     saved = read_toml(config_path())
     return {SAVED[name].env_name: _text(value) for name, value in saved.items() if name in SAVED and name not in LOGIN}
+
+
+def setting(name: str) -> Any:
+    """A client setting's value from its variable, else config.toml, else its default, for code no option reaches."""
+    entry = SAVED[name]
+    raw = os.environ.get(entry.env_name, read_toml(config_path()).get(name))
+    try:
+        return entry.declaration.default if raw is None else convert(entry.declaration, str(raw))
+    except Invalid:
+        return entry.declaration.default
 
 
 def _named(name: str) -> tuple[str, Any]:

@@ -203,9 +203,44 @@ async def deny(
     tokens: Sequence[str],
     ask: Callable[[str], str] | None = None,
     connector: Callable[..., Any] | None = None,
+    names: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Stops `tokens` logging in to the server, ending their sessions: which it denied, or why it didn't."""
-    return await ask_server(config, protocol.DENY, "denied", ask, connector, protocol.DENY, tokens=list(tokens))
+    """
+    Stops `tokens`, and every token for one of `names` minted until now, logging in to the server, ending their
+    sessions: which it denied, or why it didn't.
+    """
+    if not names:
+        return await ask_server(config, protocol.DENY, "denied", ask, connector, protocol.DENY, tokens=list(tokens))
+    # A server before denying names would deny the ids alone and say nothing of the names.
+    fields = {"tokens": list(tokens), "names": list(names)}
+    return await ask_server(config, protocol.DENY, "denied", ask, connector, protocol.TOKENS, **fields)
+
+
+async def tokens(
+    config: ClientConfig,
+    grants: Sequence[dict[str, Any]],
+    listing: bool,
+    ask: Callable[[str], str] | None = None,
+    connector: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Registers each of `grants` with the server, then, if `listing`, lists the tokens it has: the ids registered, and
+    the listing's fields; or why it stopped, with the ids registered before that.
+    """
+
+    async def talk(exchange: Exchange) -> dict[str, Any]:
+        registered: list[str] = []
+        memory = None
+        for grant in grants:
+            answer = await exchange("register", "registered", **grant)
+            if "error" in answer:
+                return {"error": answer["error"], "registered": registered}
+            registered.append(grant["id"])
+            memory = answer["memory"]
+        listed = await exchange(protocol.TOKENS, protocol.TOKENS) if listing else {"memory": memory}
+        return {**listed, "registered": registered}
+
+    return await converse(config, talk, ask, connector, protocol.TOKENS)
 
 
 async def users(

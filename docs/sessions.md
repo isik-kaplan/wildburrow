@@ -37,8 +37,8 @@ transports.
 
 Ending a session doesn't take the credential away. When it could come back, `kick` says so:
 
-- A signed token that hasn't expired logs in again until it does. `kick` prints its id, for
-  `WILDBURROW_AUTH_TOKEN_DENY` if it has to stop sooner; see [tokens.md](tokens.md#ending-a-token-early).
+- A signed token that hasn't expired logs in again until it does. `kick` prints the `wildburrow tokens deny` line
+  that stops it sooner; see [tokens.md](tokens.md#ending-a-token-early).
 - A key or password logs in again until it's removed from the server's settings.
 
 Ending one of your own sessions, like a tunnel left running on another machine, needs no such note.

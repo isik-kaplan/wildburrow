@@ -1,3 +1,5 @@
+import asyncio
+import dataclasses
 import json
 import os
 import time
@@ -20,7 +22,6 @@ from wildburrow.durations import UNITS
 
 DEFAULT_EXPIRY = "7d"
 DURATIONS = "30m, 12h, 7d, 2w or never"
-DENY = f"{PREFIX}AUTH_TOKEN_DENY"
 SERVER_PLACEHOLDER = "SERVER"
 
 
@@ -42,14 +43,10 @@ def _scope(names: tuple[str, ...] | None) -> str:
 
 
 def _warning(grant: tokens.Grant) -> str:
-    if grant.expires is None:
-        return (
-            f"{grant.name} gets a token for {_scope(grant.names)} that never expires.\n"
-            f"Only rotating the signer key or adding its id to {DENY} will ever stop it."
-        )
+    until = "that never expires" if grant.expires is None else f"until {when(grant.expires)}"
     return (
-        f"{grant.name} gets a token for {_scope(grant.names)} until {when(grant.expires)}.\n"
-        "It can't be withdrawn before then, short of rotating the signer key."
+        f"{grant.name} gets a token for {_scope(grant.names)} {until}.\n"
+        "Only an admin denying it, or its name, stops it sooner."
     )
 
 
@@ -57,18 +54,74 @@ def _confirmed(grant: tokens.Grant, yes: bool) -> bool:
     if yes:
         return True
     if not ask.interactive():
-        raise Failure("pass --yes to mint a token without being asked; it can't be withdrawn once minted", 2)
+        raise Failure("pass --yes to mint a token without being asked; only a denial stops it once it's out", 2)
     click.echo(_warning(grant))
     return ask.confirm("Mint it?", default=False)
 
 
-def _record(grant: tokens.Grant, server: str) -> None:
+def _entries() -> list[dict[str, Any]]:
+    path = log_path()
+    return [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
+
+
+def _record(grant: tokens.Grant, server: str, registered: bool | None) -> None:
     path = log_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    entry = {"id": grant.id, "name": grant.name, "names": grant.names, "expires": grant.expires, "server": server}
+    entry = {
+        "id": grant.id, "name": grant.name, "names": grant.names, "expires": grant.expires, "issued": grant.issued,
+        "server": server, "registered": registered,
+    }  # fmt: skip
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a") as log:
         log.write(json.dumps(entry) + "\n")
+
+
+def _registered(ids: set[str]) -> None:
+    """Marks `ids` registered in the log, rewritten whole beside it and swapped in."""
+    path = log_path()
+    entries = _entries()
+    # A token just minted is registered before it's written down, and written down as registered.
+    if not ids & {entry["id"] for entry in entries}:
+        return
+    entries = [entry | {"registered": True} if entry["id"] in ids else entry for entry in entries]
+    temporary = path.with_name(f".{path.name}.new")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as log:
+        log.write("".join(json.dumps(entry) + "\n" for entry in entries))
+    os.replace(temporary, path)
+
+
+def unsynced(server: str | None = None) -> list[dict[str, Any]]:
+    """Tokens minted here with --offline, or whose registering failed, on `server` or any; older mints never are."""
+    return [
+        entry for entry in _entries()
+        if entry.get("registered") is False and (server is None or entry["server"] == server)
+    ]  # fmt: skip
+
+
+def _grant(entry: dict[str, Any]) -> dict[str, Any]:
+    return {key: entry[key] for key in ("id", "name", "names", "expires", "issued")}
+
+
+def _login(server: str | None) -> ClientConfig | None:
+    """The saved login, on `server` instead when given; None with no login saved."""
+    saved = read_config(config_path())
+    if saved is None:
+        return None
+    return saved if server is None else dataclasses.replace(saved, server=server)
+
+
+def _talk(config: ClientConfig, grants: list[dict[str, Any]], listing: bool) -> dict[str, Any]:
+    """Registers `grants` and maybe lists, marking what got registered; the answer, or {"error": why}."""
+    try:
+        answer = asyncio.run(websocket.tokens(config, grants, listing, ask.password))
+    except websocket.ClientError as exc:
+        return {"error": str(exc), "registered": []}
+    if answer["registered"]:
+        _registered(set(answer["registered"]))
+    if answer.get("memory"):
+        click.echo(f"{config.server} keeps its record in memory, so it forgets registered tokens on restart", err=True)
+    return answer
 
 
 def ask_token() -> int:
@@ -97,12 +150,17 @@ class Mint(
         question=NoQuestion(reason="the saved login's key signs, nearly always the one; --identity covers the rest"),
     )  # fmt: skip
     server = Setting(
-        str, "server for the login line", default=UNSET, shown="the saved login's",
+        str, "server to register it with and log in to", default=UNSET, shown="the saved login's",
         question=NoQuestion(reason="the saved login names the server, and the line printed says when there is none"),
     )  # fmt: skip
     yes = Setting(
         bool, "don't ask first", option=("-y", "--yes"), default=False, negatable=False,
         question=AskedAtUse(reason="the warning and its question come once the grant is known, just before signing"),
+    )  # fmt: skip
+    offline = Setting(
+        bool, "don't register it with the server, which then lists it only once it's used", default=False,
+        negatable=False,
+        question=AskedAtUse(reason="asked as whether to mint it anyway, once registering it with the server fails"),
     )  # fmt: skip
     hashed = Setting(
         bool, "a random token for the server's TOKEN_HASHES instead", option="--hash", default=False,
@@ -113,7 +171,7 @@ class Mint(
 @click.group("tokens", invoke_without_command=True)
 @click.pass_context
 def tokens_group(ctx: click.Context) -> int | None:
-    """List the tokens minted on this machine, which a server can't list; or mint one with `tokens new`."""
+    """List the tokens the saved login's server has and those minted here; or mint one with `tokens new`."""
     return _tokens_group(ctx)
 
 
@@ -143,12 +201,19 @@ def _new_token(name: str | None, settings: Mint) -> int:
         return ask_token()
     return _token(
         name, _given(settings, "names"), settings.expires, _given(settings, "identity"), _given(settings, "server"),
-        settings.yes, settings.hashed,
+        settings.yes, settings.hashed, settings.offline,
     )  # fmt: skip
 
 
 def _token(
-    name: str, names: str | None, expires: str, identity: str | None, server: str | None, yes: bool, hashed: bool
+    name: str,
+    names: str | None,
+    expires: str,
+    identity: str | None,
+    server: str | None,
+    yes: bool,
+    hashed: bool,
+    offline: bool = False,
 ) -> int:
     if hashed:
         value = tokens.new_token()
@@ -173,9 +238,13 @@ def _token(
         raise Failure(str(exc)) from None
     value = tokens.encode(grant.payload(), tokens.unarmor(armored))
     target = server or saved.server
-    _record(grant, target)
+    registered = False if offline else _register(grant, target)
+    if registered is None:
+        return 1
+    # With no server named, there's nothing it could be registered with later either.
+    _record(grant, target, registered if target else None)
     click.echo(f"token for {name}, valid until {when(grant.expires)}, for: {_scope(patterns)}")
-    click.echo(f"id: {grant.id} (for {DENY}, should it need stopping early)")
+    click.echo(f"id: {grant.id} (`wildburrow tokens deny {grant.id}` stops it early)")
     click.echo(f"\non {name}'s device:")
     click.echo("  uv tool install wildburrow")
     # --auth spelled out for clients before 0.4.1, which take the server's suggested method over a given token.
@@ -185,20 +254,101 @@ def _token(
     return 0
 
 
+def _register(grant: tokens.Grant, server: str) -> bool | None:
+    """
+    Registers `grant` with `server`: True once it is; False when it couldn't be and minting it anyway was asked
+    for; None when it wasn't.
+    """
+    config = _login(server or None)
+    if config is None or not server:
+        problem = "no saved login to reach a server with"
+    else:
+        answer = _talk(config, [_entry(grant)], listing=False)
+        if "error" not in answer:
+            return True
+        problem = str(answer["error"])
+    if not ask.interactive():
+        raise Failure(f"couldn't register the token with {server or 'a server'}: {problem}; pass --offline", 2)
+    click.echo(f"Couldn't register the token with {server or 'a server'}: {problem}")
+    if not ask.confirm("Mint it without registering it?", default=False):
+        return None
+    return False
+
+
+def _entry(grant: tokens.Grant) -> dict[str, Any]:
+    return {"id": grant.id, "name": grant.name, "names": grant.names, "expires": grant.expires, "issued": grant.issued}
+
+
 def _list_tokens() -> int:
-    path = log_path()
-    entries: list[dict[str, Any]] = (
-        [json.loads(line) for line in path.read_text().splitlines() if line] if path.exists() else []
-    )
-    if not entries:
-        click.echo("no tokens minted on this machine")
+    config = _login(None)
+    found: dict[str, Any] = {"tokens": [], "denied_names": {}}
+    if config is not None:
+        answer = _talk(config, [_grant(entry) for entry in unsynced(config.server)], listing=True)
+        if "error" in answer:
+            click.echo(f"couldn't list {config.server}'s tokens: {answer['error']}; listing this machine's", err=True)
+        else:
+            found = answer
+    # Read after registering, which marks what it registered.
+    local = {entry["id"]: entry for entry in _entries()}
+    listed = {row["id"]: {**row, "server": config.server if config else ""} for row in found["tokens"]}
+    for token, entry in local.items():
+        # What the server knows of a token wins over what was written here when it was minted.
+        listed[token] = entry | {key: value for key, value in listed.get(token, {}).items() if value is not None}
+    if not listed:
+        click.echo("no tokens")
         return 0
     now = time.time()
-    rows = [("ID", "NAME", "NAMES", "EXPIRES", "SERVER")]
-    for entry in entries:
+    rows = [("ID", "NAME", "NAMES", "EXPIRES", "LAST USED", "STATE", "SERVER")]
+    for token, entry in listed.items():
         expires = entry["expires"]
-        state = when(expires) if expires is None or expires > now else f"expired {when(expires)}"
+        expiry = when(expires) if expires is None or expires > now else f"expired {when(expires)}"
         names = None if entry["names"] is None else tuple(entry["names"])
-        rows.append((entry["id"], entry["name"], _scope(names), state, entry["server"] or "-"))
+        last = when(entry["last_used"]) if entry.get("last_used") else "-"
+        rows.append(
+            (
+                token,
+                entry["name"] or "-",
+                _scope(names),
+                expiry,
+                last,
+                _state(entry, found, config),
+                entry["server"] or "-",
+            )
+        )
     table(rows)
+    for name, before in found["denied_names"].items():
+        click.echo(f"denied: every token for {name} minted before {when(before)}")
+    return 0
+
+
+def _state(entry: dict[str, Any], found: dict[str, Any], config: ClientConfig | None) -> str:
+    # A name denied on the saved login's server says nothing of tokens for another.
+    mine = config is not None and entry["server"] == config.server
+    before = found["denied_names"].get(entry["name"]) if mine else None
+    if entry.get("denied") or (before is not None and entry.get("issued") is not None and entry["issued"] < before):
+        return "denied"
+    if entry.get("registered") is False:
+        return "unregistered"
+    return "-"
+
+
+@tokens_group.command("sync")
+def sync_tokens() -> int:
+    """Register the tokens minted here with --offline with the saved login's server, so any admin can list them."""
+    return _sync()
+
+
+def _sync() -> int:
+    config = _login(None)
+    if config is None:
+        raise Failure("no saved login to reach a server with: run `wildburrow login` first", 2)
+    waiting = unsynced(config.server)
+    if not waiting:
+        click.echo(f"every token minted here for {config.server} is registered")
+        return 0
+    answer = _talk(config, [_grant(entry) for entry in waiting], listing=False)
+    if answer["registered"]:
+        click.echo(f"registered {len(answer['registered'])} of {len(waiting)} with {config.server}")
+    if "error" in answer:
+        raise Failure(f"couldn't register with {config.server}: {answer['error']}")
     return 0

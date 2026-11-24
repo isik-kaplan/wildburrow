@@ -27,6 +27,8 @@ class Identity:
     # The user it belongs to, when that isn't its name: a key's comment names a device as `user@device`. One user's
     # identities are their devices, each its own identity but all theirs.
     owner: str = field(default="", compare=False)
+    # When the signed token was minted, for denying a name's tokens minted before a moment.
+    issued: int | None = field(default=None, compare=False)
 
     @property
     def user(self) -> str:

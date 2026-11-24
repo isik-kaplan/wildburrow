@@ -139,7 +139,7 @@ class Server:
             except DatabaseError as exc:
                 raise config.ConfigError(f"{config.PREFIX}DATABASE: {exc}") from None
             stack.push_async_callback(record.close)
-            self.ctx.denied = denied
+            self.ctx.denied, self.ctx.denied_names = denied
             await self._open_users()
             handler = Handler(record)
             logging.getLogger(__package__).addHandler(handler)

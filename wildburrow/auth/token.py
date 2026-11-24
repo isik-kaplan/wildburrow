@@ -63,7 +63,9 @@ class TokenAuth:
         if grant.id in self._deny or (grant.expires is not None and self._clock() > grant.expires + GRACE_SECONDS):
             return None
         # One identity per name, so a person's tokens share their names whichever one they connect with.
-        return Identity(grant.name, "token", f"signed:{grant.name}", grant.names, grant.expires, grant.id)
+        return Identity(
+            grant.name, "token", f"signed:{grant.name}", grant.names, grant.expires, grant.id, issued=grant.issued
+        )
 
 
 def _hashes(text: str) -> dict[str, str]:

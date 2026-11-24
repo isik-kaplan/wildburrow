@@ -24,11 +24,13 @@ DATABASE_PREFIX = f"{PREFIX}DATABASE_"
 MEMORY = ":memory:"
 # 'WBRW': a file without it isn't one of ours.
 APPLICATION_ID = 1463964247
-VERSION = 2
+VERSION = 3
 # The first schema, and each later one as the change from the one before; a new file goes through them all, as an older
 # one catches up.
 SCHEMA = (resources.files(__package__) / "schema.sql").read_text()
-MIGRATIONS = {version: (resources.files(__package__) / "migrations" / f"{version}.sql").read_text() for version in (2,)}
+MIGRATIONS = {
+    version: (resources.files(__package__) / "migrations" / f"{version}.sql").read_text() for version in (2, 3)
+}
 # Every table whose id the server assigns from a counter, carried on from the largest one already there: each one
 # another row points at before the batch carrying it is written.
 COUNTED = ("runs", "identities", "commands", "tunnels", "connections", "certificates", "users", "user_keys", "invites")
