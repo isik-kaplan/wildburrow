@@ -111,10 +111,11 @@ async def test_only_a_token_id_can_be_denied(tmp_path: Path, monkeypatch: pytest
     ctx, written = context(tmp_path, monkeypatch, Fixed((PasswordCredential,), LAPTOP))
     admin = session(ctx, ADMIN)
     # A key or password login's token is "", so denying it would have locked every one of them out.
-    for bad in ("", "t", "3F9A0C4E1B2D7A65", "3f9a0c4e1b2d7a6", "3f9a0c4e1b2d7a65x", "3f9a0c4e1b2d7a6g"):
+    for bad in ("", "t", "3F9A0C4E1B2D7A65", "3f9a0c4e1b2d7a6", "3f9a0c4e1b2d7a65x", "3f9a0c4e1b2d7a6g", "X" * 16):
         assert ctx.deny(admin, [ALICE.token or "", bad]) == {
             "error": f"not a token id: {bad!r}; `wildburrow tokens` lists them"
         }  # fmt: skip
+    assert ctx.deny(admin, ["t", "u"]) == {"error": "not a token id: 't', 'u'; `wildburrow tokens` lists them"}
     assert ctx.deny(admin, [], names=["alice", ""]) == {"error": "a name to deny can't be empty"}
     assert (ctx.denied, ctx.denied_names) == (set(), {})
     assert admin.reason is None

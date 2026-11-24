@@ -259,11 +259,11 @@ class Recorder:
         if self._database is None:
             return []
         await self._database.flush()
-        fields = ("id", "name", "names", "expires", "issued", "first_used", "last_used", "denied")
-        rows = [dict(zip(fields, row, strict=True)) for row in await self._database.read(TOKENS)]
-        for row in rows:
-            row["names"] = None if row["names"] is None else json.loads(row["names"])
-        return rows
+        return [
+            {"id": token, "name": name, "names": None if names is None else json.loads(names), "expires": expires,
+             "issued": issued, "first_used": first, "last_used": last, "denied": denied}
+            for token, name, names, expires, issued, first, last, denied in await self._database.read(TOKENS)
+        ]  # fmt: skip
 
     def session_opened(self, session: Session, admin: bool, client: dict[str, Any]) -> None:
         identity_id = self.identity(session.identity)

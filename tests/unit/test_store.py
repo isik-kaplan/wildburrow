@@ -540,8 +540,12 @@ async def test_tokens_registered_used_and_denied_by_name_are_listed_and_kept(tmp
     # Registering again, or using it, fills in only what wasn't known.
     first.register("t1", "mallory", None, None, 1)
     first.auth("websocket", "token", PEER, dataclasses.replace(ALICE, issued=NOW - 5), None)
+    # Used before it was ever registered, what the token says of itself is kept.
+    first.auth("websocket", "token", PEER, Identity("dan", "token", "signed:dan", token="t0", issued=NOW - 20), None)
     first.deny_name("bob", NOW + 60, LAPTOP)
     assert await first.tokens() == [
+        {"id": "t0", "name": "dan", "names": None, "expires": None, "issued": NOW - 20, "first_used": NOW,
+         "last_used": NOW, "denied": None},
         {"id": "t3", "name": "ci", "names": None, "expires": None, "issued": NOW - 9, "first_used": None,
          "last_used": None, "denied": None},
         {"id": "t1", "name": "alice", "names": ["alice"], "expires": NOW + DAY, "issued": NOW - 5,
@@ -549,6 +553,10 @@ async def test_tokens_registered_used_and_denied_by_name_are_listed_and_kept(tmp
         {"id": "name:bob", "name": "bob", "names": None, "expires": None, "issued": None, "first_used": None,
          "last_used": None, "denied": NOW + 60},
     ]  # fmt: skip
+    # Any name, as NULL like a used token's, and who denied the name.
+    assert await rows(first, "SELECT names FROM tokens WHERE id = 't3'") == [(None,)]
+    denier = "SELECT i.subject FROM tokens t JOIN identities i ON i.id = t.revoked_by_identity_id"
+    assert await rows(first, denier) == [(LAPTOP.subject,)]
     await first.close()
     second = Recorder(Database(Storage(path), Clock()))
     assert await second.open("0.8.0", "host", "example.com", {}) == (set(), {"bob": NOW + 60})

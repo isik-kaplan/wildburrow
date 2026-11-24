@@ -637,8 +637,16 @@ PASSWORD_HELLO = {"type": "hello", "method": "password", "username": "me", "pass
             lambda c: websocket.deny(PASSWORD_CONFIG, ["t"], lambda p: "typed", c),
             protocol.encode("denied", tokens=["t"], ended=[]),
         ),
+        (
+            lambda c: websocket.deny(PASSWORD_CONFIG, [], lambda p: "typed", c, names=["bob"]),
+            protocol.encode("denied", tokens=[], ended=[]),
+        ),
+        (
+            lambda c: websocket.tokens(PASSWORD_CONFIG, [], True, lambda p: "typed", c),
+            protocol.encode("tokens", tokens=[], denied_names={}),
+        ),
     ],
-    ids=["names", "sessions", "kick", "deny"],
+    ids=["names", "sessions", "kick", "deny", "deny-names", "tokens"],
 )
 async def test_requests_ask_the_password_with_the_prompt_given(request_server: Callable, answer: str) -> None:
     control = FakeControl([welcomed(), answer])

@@ -132,6 +132,14 @@ def test_a_saved_value_is_what_a_question_starts_from(typed: Typist, connected: 
     assert typed.showed("? Where the local port listens 127.0.0.2")
 
 
+def test_a_setting_no_option_reaches_is_read_variable_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert saved.setting("local_host") == "localhost"
+    write_toml(config_path(), {"local_host": "127.0.0.3", "link_uses": "lots"})
+    assert (saved.setting("local_host"), saved.setting("link_uses")) == ("127.0.0.3", 1)
+    monkeypatch.setenv("WILDBURROW_CLIENT_LOCAL_HOST", "127.0.0.2")
+    assert saved.setting("local_host") == "127.0.0.2"
+
+
 def test_a_login_keeps_what_config_saved() -> None:
     assert cli.main(["config", "set", "local_host", "127.0.0.2"]) == 0
     write_config(config_path(), ClientConfig("s.example.com"))

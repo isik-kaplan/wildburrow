@@ -243,11 +243,13 @@ def test_hashed_tokens_still_mint(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_every_mint_is_logged_privately_without_the_token(
-    logged_in: ClientConfig, capsys: pytest.CaptureFixture[str]
+    logged_in: ClientConfig, server: Server, capsys: pytest.CaptureFixture[str]
 ) -> None:
     cli.main(["tokens", "new", "alice", "--names", "alice", "-y"])
     cli.main(["tokens", "new", "bob", "--names", "any", "--expires", "never", "-y", "--server", "b.example.com"])
     out = capsys.readouterr().out
+    # Each is registered with the server it's for, through the saved login.
+    assert [call[0] for call in server.calls] == [SERVER, "b.example.com"]
     path = tokens_cli.log_path()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
@@ -295,10 +297,11 @@ def test_tokens_merges_what_the_server_has_with_what_was_minted_here(
         {"id": "b" * 16, **used, "issued": 1, "denied": 7},
         {"id": "c" * 16, **used, "issued": 9, "denied": None},
         {"id": "d" * 16, **used, "issued": None, "denied": None},
+        {"id": "g" * 16, **used, "issued": 5, "denied": None},
         {"id": "e" * 16, "name": None, "names": None, "expires": None, "issued": None, "first_used": None,
          "last_used": None, "denied": 3},
-        {"id": mine["id"], "name": "alice", "names": ["alice"], "expires": None, "issued": mine["issued"],
-         "first_used": None, "last_used": None, "denied": None},
+        {"id": mine["id"], "name": None, "names": None, "expires": None, "issued": mine["issued"],
+         "first_used": 5, "last_used": 1_000_000_000, "denied": None},
     ]  # fmt: skip
     server.denied_names = {"dave": 5}
     with tokens_cli.log_path().open("a") as log:
@@ -315,8 +318,9 @@ def test_tokens_merges_what_the_server_has_with_what_was_minted_here(
         f"{'b' * 16}  dave   dave      never    {last}  denied  {SERVER}",
         f"{'c' * 16}  dave   dave      never    {last}  -       {SERVER}",
         f"{'d' * 16}  dave   dave      never    {last}  -       {SERVER}",
+        f"{'g' * 16}  dave   dave      never    {last}  -       {SERVER}",
         f"{'e' * 16}  -      any name  never    {'-':<20}  denied  {SERVER}",
-        f"{mine['id']}  alice  alice     never    {'-':<20}  -       {SERVER}",
+        f"{mine['id']}  alice  alice     never    {last}  -       {SERVER}",
         f"{'f' * 16}  dave   dave      never    {'-':<20}  -       b.example.com",
         "denied: every token for dave minted before 1970-01-01 00:00 UTC",
     ]
@@ -425,6 +429,10 @@ def test_sync_registers_what_was_minted_offline(
     assert capsys.readouterr().out == f"registered 1 of 1 with {SERVER}\n"
     assert server.calls[-1] == (SERVER, ids[1:2], False)
     assert [entry["id"] for entry in tokens_cli.unsynced()] == ids[2:]
+    assert stat.S_IMODE(tokens_cli.log_path().stat().st_mode) == 0o600
+    # Listing registers only what's for the saved login's server.
+    cli.main(["tokens"])
+    assert server.calls[-1] == (SERVER, [], True)
 
 
 def test_sync_needs_a_login(capsys: pytest.CaptureFixture[str]) -> None:
@@ -596,12 +604,27 @@ def test_without_a_login_tokens_lists_this_machines(
     assert (err, server.calls) == ("", [])
 
 
+@pytest.mark.parametrize(
+    ("error", "said"),
+    [("only an admin can register tokens", "only an admin can register tokens"),
+     (websocket.ClientError("could not connect"), "could not connect")],
+)  # fmt: skip
 def test_sync_refused_outright_registers_nothing(
-    logged_in: ClientConfig, server: Server, capsys: pytest.CaptureFixture[str]
+    logged_in: ClientConfig, server: Server, capsys: pytest.CaptureFixture[str], error: Any, said: str
 ) -> None:
     cli.main(["tokens", "new", "a", "--names", "any", "-y", "--offline"])
     capsys.readouterr()
-    server.error = "only an admin can register tokens"
+    server.error = error
     assert cli.main(["tokens", "sync"]) == 1
-    assert capsys.readouterr() == ("", f"couldn't register with {SERVER}: only an admin can register tokens\n")
+    assert capsys.readouterr() == ("", f"couldn't register with {SERVER}: {said}\n")
     assert len(tokens_cli.unsynced()) == 1
+
+
+def test_in_a_terminal_without_a_login_it_asks_too(
+    credentials: Credentials, typed: Typist, capsys: pytest.CaptureFixture[str]
+) -> None:
+    typed("y", ENTER)
+    assert cli.main(["tokens", "new", "a", "--names", "any", "-y", "--identity", str(credentials.key)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Couldn't register the token with a server: no saved login to reach a server with\n")
+    assert typed.showed("? Mint it without registering it? Yes")

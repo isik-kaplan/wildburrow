@@ -194,6 +194,10 @@ async def test_only_an_admin_denies_tokens(
     assert await websocket.deny(someone, ["t"], connector=local(running)) == {
         "type": "denied", "error": "only an admin can deny tokens"
     }  # fmt: skip
+    # Names alone, no ids at all.
+    laptop = client_config(credentials, "key")
+    answer = await websocket.ask_server(laptop, "deny", "denied", connector=local(running), names=["nobody"])
+    assert (answer["tokens"], answer["names"]) == ([], ["nobody"])
     await running.server.__aexit__(None, None, None)
 
 

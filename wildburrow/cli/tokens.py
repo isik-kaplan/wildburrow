@@ -103,14 +103,6 @@ def _grant(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: entry[key] for key in ("id", "name", "names", "expires", "issued")}
 
 
-def _login(server: str | None) -> ClientConfig | None:
-    """The saved login, on `server` instead when given; None with no login saved."""
-    saved = read_config(config_path())
-    if saved is None:
-        return None
-    return saved if server is None else dataclasses.replace(saved, server=server)
-
-
 def _talk(config: ClientConfig, grants: list[dict[str, Any]], listing: bool) -> dict[str, Any]:
     """Registers `grants` and maybe lists, marking what got registered; the answer, or {"error": why}."""
     try:
@@ -129,7 +121,7 @@ def ask_token() -> int:
     name = ask.text("Who is it for", "", ask.required)
     names = ask.text(f"Names they may claim, comma-separated (or {ANY})", f"{name},*.{name}", ask.required)
     expires = ask.text(f"Good for ({DURATIONS})", DEFAULT_EXPIRY, ask.required)
-    return _token(name, names, expires, None, None, False, False)
+    return _token(name, names, expires, None, None, False, False, False)
 
 
 ASKED = ReplacedByFlow(flow=ask_token, reason="tokens new given no NAME in a terminal asks for the name first")
@@ -213,7 +205,7 @@ def _token(
     server: str | None,
     yes: bool,
     hashed: bool,
-    offline: bool = False,
+    offline: bool,
 ) -> int:
     if hashed:
         value = tokens.new_token()
@@ -259,17 +251,18 @@ def _register(grant: tokens.Grant, server: str) -> bool | None:
     Registers `grant` with `server`: True once it is; False when it couldn't be and minting it anyway was asked
     for; None when it wasn't.
     """
-    config = _login(server or None)
+    config = read_config(config_path())
     if config is None or not server:
         problem = "no saved login to reach a server with"
     else:
-        answer = _talk(config, [_entry(grant)], listing=False)
+        answer = _talk(dataclasses.replace(config, server=server), [_entry(grant)], listing=False)
         if "error" not in answer:
             return True
         problem = str(answer["error"])
+    where = server or "a server"
     if not ask.interactive():
-        raise Failure(f"couldn't register the token with {server or 'a server'}: {problem}; pass --offline", 2)
-    click.echo(f"Couldn't register the token with {server or 'a server'}: {problem}")
+        raise Failure(f"couldn't register the token with {where}: {problem}; pass --offline", 2)
+    click.echo(f"Couldn't register the token with {where}: {problem}")
     if not ask.confirm("Mint it without registering it?", default=False):
         return None
     return False
@@ -280,7 +273,7 @@ def _entry(grant: tokens.Grant) -> dict[str, Any]:
 
 
 def _list_tokens() -> int:
-    config = _login(None)
+    config = read_config(config_path())
     found: dict[str, Any] = {"tokens": [], "denied_names": {}}
     if config is not None:
         answer = _talk(config, [_grant(entry) for entry in unsynced(config.server)], listing=True)
@@ -288,9 +281,11 @@ def _list_tokens() -> int:
             click.echo(f"couldn't list {config.server}'s tokens: {answer['error']}; listing this machine's", err=True)
         else:
             found = answer
+            for row in found["tokens"]:
+                row["server"] = config.server
     # Read after registering, which marks what it registered.
     local = {entry["id"]: entry for entry in _entries()}
-    listed = {row["id"]: {**row, "server": config.server if config else ""} for row in found["tokens"]}
+    listed = {row["id"]: row for row in found["tokens"]}
     for token, entry in local.items():
         # What the server knows of a token wins over what was written here when it was minted.
         listed[token] = entry | {key: value for key, value in listed.get(token, {}).items() if value is not None}
@@ -339,7 +334,7 @@ def sync_tokens() -> int:
 
 
 def _sync() -> int:
-    config = _login(None)
+    config = read_config(config_path())
     if config is None:
         raise Failure("no saved login to reach a server with: run `wildburrow login` first", 2)
     waiting = unsynced(config.server)

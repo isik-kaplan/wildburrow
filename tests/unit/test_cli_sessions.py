@@ -356,7 +356,7 @@ def test_the_menu_logs_in(typed: Typist, ran: Ran) -> None:
 def test_the_menu_mints_a_token(typed: Typist, ran: Ran) -> None:
     typed(DOWN, DOWN, ENTER, ENTER, "bob", ENTER, "\b" * 9, ENTER, "bob,*.bob", ENTER, "\b\b", ENTER, "2h", ENTER)
     assert cli.main([]) == 7
-    assert ran.calls == [("_token", ("bob", "bob,*.bob", "2h", None, None, False, False))]
+    assert ran.calls == [("_token", ("bob", "bob,*.bob", "2h", None, None, False, False, False))]
     assert typed.showed(
         "? Who is it for bob",
         "? Names they may claim, comma-separated (or any) bob,*.bob",
